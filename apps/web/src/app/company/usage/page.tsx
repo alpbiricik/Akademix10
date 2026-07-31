@@ -1,15 +1,17 @@
 import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getUsageSummary } from "@/lib/adapters/usageAdapter";
 
-const rows = [
-  ["Sessions completed", "118"],
-  ["Estimated cost", "$147.50"],
-  ["Avatar usage", "949.9 min buffered"],
-  ["Safe budget", "$1.25/session"],
-];
+export default async function CompanyUsagePage() {
+  const summary = await getUsageSummary("company");
+  const rows = [
+    ["Sessions completed", "118"],
+    ["Estimated cost", "$147.50"],
+    ["Avatar usage", `${summary.bufferedAvatarMin ?? 8.05} min buffered`],
+    ["Safe budget", `$${(summary.safeBudgetUsd ?? 1.25).toFixed(2)}/session`],
+  ];
 
-export default function CompanyUsagePage() {
   return (
     <AppShell>
       <ProtectedRoute allowedRoles={["company"]}>

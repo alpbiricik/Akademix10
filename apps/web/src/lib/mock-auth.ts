@@ -60,6 +60,12 @@ export function isMockRole(value: unknown): value is MockRole {
 
 function normalizeMockRole(value: unknown): MockRole | null {
   if (isMockRole(value)) return value;
+
+  // Active product roles are only platform, company, and learner.
+  // These old strings are accepted only to migrate stale localStorage data from
+  // earlier prototypes. Login/UI must never expose admin, trainer,
+  // platform_admin, or company_admin as real app roles. Remove this tolerance
+  // after old browser sessions are no longer relevant.
   if (value === "admin" || value === "trainer" || value === "platform_admin") return "platform";
   if (value === "company_admin") return "company";
   if (value === "user") return "learner";

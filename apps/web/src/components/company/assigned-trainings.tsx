@@ -5,8 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ClipboardList, PlayCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ASSIGNED_TRAININGS_STORAGE_KEY } from "@/lib/mock-data/training-catalog";
-import { getAllTrainingTemplates } from "@/lib/repositories/trainingRepository";
+import { BROWSER_ASSIGNMENTS_STORAGE_KEY, getPlatformTemplates } from "@/lib/adapters/platformAdapter";
+import type { TrainingTemplateDTO } from "@/lib/contracts/dtos";
 import type { TrainingTemplate } from "@/lib/state-machine/types";
 
 interface AssignedTraining {
@@ -21,15 +21,19 @@ interface AssignedTraining {
 
 export function AssignedTrainings() {
   const [assignments, setAssignments] = useState<AssignedTraining[]>([]);
+  const [templates, setTemplates] = useState<Array<TrainingTemplate | TrainingTemplateDTO>>([]);
 
   useEffect(() => {
-    setAssignments(readAssignments());
+    queueMicrotask(() => {
+      setAssignments(readAssignments());
+    });
+    getPlatformTemplates().then(setTemplates);
   }, []);
 
   const displayItems = useMemo(() => {
     if (assignments.length) return assignments;
 
-    return getAllTrainingTemplates().slice(0, 3).map((template) => ({
+    return templates.slice(0, 3).map((template) => ({
       id: `default-${template.id}`,
       templateId: template.id,
       title: template.title,
@@ -38,7 +42,7 @@ export function AssignedTrainings() {
       assignedAt: "Mock default",
       status: "sent_to_company" as const,
     }));
-  }, [assignments]);
+  }, [assignments, templates]);
 
   return (
     <Card className="rounded-lg border-slate-200">
@@ -55,7 +59,7 @@ export function AssignedTrainings() {
       </CardHeader>
       <CardContent className="grid gap-3">
         {displayItems.map((assignment) => {
-          const template = getAllTrainingTemplates().find((item) => item.id === assignment.templateId);
+          const template = templates.find((item) => item.id === assignment.templateId);
 
           return (
             <AssignedTrainingCard key={assignment.id} assignment={assignment} template={template} />
@@ -71,7 +75,7 @@ function AssignedTrainingCard({
   template,
 }: {
   assignment: AssignedTraining;
-  template?: TrainingTemplate;
+  template?: TrainingTemplate | TrainingTemplateDTO;
 }) {
   return (
     <div className="rounded-md border border-slate-200 bg-white p-4">
@@ -108,7 +112,7 @@ function AssignedTrainingCard({
 
 function readAssignments(): AssignedTraining[] {
   try {
-    const value = window.localStorage.getItem(ASSIGNED_TRAININGS_STORAGE_KEY);
+    const value = window.localStorage.getItem(BROWSER_ASSIGNMENTS_STORAGE_KEY);
     if (!value) return [];
     const parsed = JSON.parse(value);
     if (!Array.isArray(parsed)) return [];

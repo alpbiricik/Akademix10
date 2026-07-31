@@ -1,4 +1,4 @@
-export * from "./demo-session";
+export * from "./assignments";
 export * from "./sessions";
 export * from "./companies";
 export * from "./trainingTemplates";

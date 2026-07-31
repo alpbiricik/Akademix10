@@ -3,12 +3,13 @@ import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppShell } from "@/components/layout/app-shell";
 import { SkillRadar } from "@/components/dashboard/skill-radar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { mockFinalReport, trainingSessions } from "@/lib/mock-data";
+import { getLearnerReport } from "@/lib/adapters/learnerAdapter";
+import { getSession } from "@/lib/adapters/sessionAdapter";
 
 export default async function LearnerReportPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = await params;
-  const session = trainingSessions.find((item) => item.id === sessionId);
-  if (!session || mockFinalReport.sessionId !== sessionId) notFound();
+  const [session, report] = await Promise.all([getSession(sessionId), getLearnerReport(sessionId)]);
+  if (!session || report.sessionId !== sessionId) notFound();
 
   return (
     <AppShell>
@@ -17,25 +18,25 @@ export default async function LearnerReportPage({ params }: { params: Promise<{ 
           <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
             <p className="text-sm font-semibold uppercase tracking-wide text-teal-700">My report</p>
             <h1 className="mt-2 text-3xl font-semibold">Stress Management report</h1>
-            <p className="mt-2 max-w-3xl text-slate-600">{mockFinalReport.completionSummary}</p>
+            <p className="mt-2 max-w-3xl text-slate-600">{report.completionSummary}</p>
           </section>
           <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
             <Card className="rounded-lg border-slate-200">
               <CardHeader><CardTitle>Skill scores</CardTitle></CardHeader>
-              <CardContent><SkillRadar scores={mockFinalReport.skillScores} /></CardContent>
+              <CardContent><SkillRadar scores={report.skillScores} /></CardContent>
             </Card>
             <Card className="rounded-lg border-slate-200">
               <CardHeader><CardTitle>Personalized action plan</CardTitle></CardHeader>
               <CardContent className="space-y-3">
-                {mockFinalReport.actionPlan.map((item, index) => (
+                {report.actionPlan.map((item, index) => (
                   <div key={item} className="rounded-md bg-slate-50 p-3 text-sm"><span className="font-semibold text-teal-700">{index + 1}. </span>{item}</div>
                 ))}
               </CardContent>
             </Card>
           </div>
           <div className="grid gap-6 lg:grid-cols-2">
-            <ListCard title="Strengths" items={mockFinalReport.strengths} />
-            <ListCard title="Improvement areas" items={mockFinalReport.improvementAreas} />
+            <ListCard title="Strengths" items={report.strengths} />
+            <ListCard title="Improvement areas" items={report.improvementAreas} />
           </div>
         </div>
       </ProtectedRoute>

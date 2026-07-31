@@ -4,7 +4,7 @@ import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AssignedTrainings } from "@/components/company/assigned-trainings";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
-import { getTrainingsAssignedToCompany } from "@/lib/repositories/companyRepository";
+import { getCompanyDashboardSummary } from "@/lib/adapters/companyAdapter";
 
 const links = [
   { title: "Assigned Trainings", href: "/company/trainings" },
@@ -13,8 +13,8 @@ const links = [
   { title: "Usage & Cost", href: "/company/usage" },
 ];
 
-export default function CompanyDashboardPage() {
-  const assignedTrainings = getTrainingsAssignedToCompany("company-demo");
+export default async function CompanyDashboardPage() {
+  const summary = await getCompanyDashboardSummary("company-demo");
 
   return (
     <AppShell>
@@ -26,9 +26,9 @@ export default function CompanyDashboardPage() {
             <p className="mt-2 max-w-3xl text-slate-600">Customer-side view for assigned trainings, employee enrollments, company reports, and usage.</p>
           </section>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <Metric title="Assigned trainings" value={`${assignedTrainings.length}`} detail="From platform" icon={ClipboardList} />
-            <Metric title="Completion" value="74%" detail="Current cohort" icon={BarChart3} />
-            <Metric title="Skill impact" value="+8.2" detail="Average lift" icon={BarChart3} />
+            <Metric title="Assigned trainings" value={`${summary.assignedTrainingCount}`} detail="From platform" icon={ClipboardList} />
+            <Metric title="Completion" value={`${summary.completionRate}%`} detail="Current cohort" icon={BarChart3} />
+            <Metric title="Skill impact" value={`+${summary.averageSkillLift}`} detail="Average lift" icon={BarChart3} />
             <Metric title="Usage" value="$148" detail="Mock monthly cost" icon={DollarSign} />
           </div>
           <div className="grid gap-4 md:grid-cols-4">

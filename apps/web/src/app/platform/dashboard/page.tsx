@@ -3,8 +3,7 @@ import { Building2, DollarSign, LibraryBig, Send } from "lucide-react";
 import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { getAllCompanies } from "@/lib/repositories/companyRepository";
-import { getAllTrainingTemplates } from "@/lib/repositories/trainingRepository";
+import { getPlatformDashboardSummary } from "@/lib/adapters/platformAdapter";
 
 const links = [
   { title: "Training Templates", href: "/platform/templates" },
@@ -13,7 +12,9 @@ const links = [
   { title: "Usage & Cost", href: "/platform/usage" },
 ];
 
-export default function PlatformDashboardPage() {
+export default async function PlatformDashboardPage() {
+  const summary = await getPlatformDashboardSummary();
+
   return (
     <AppShell>
       <ProtectedRoute allowedRoles={["platform"]}>
@@ -27,10 +28,10 @@ export default function PlatformDashboardPage() {
           </section>
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <Metric title="Templates" value={`${getAllTrainingTemplates().length}`} detail="Reusable training products" icon={LibraryBig} />
-            <Metric title="Companies" value={`${getAllCompanies().length}`} detail="Mock customer tenants" icon={Building2} />
-            <Metric title="Assignments" value="7" detail="Active customer rollouts" icon={Send} />
-            <Metric title="Avg budget" value="$1.25" detail="Safe session budget" icon={DollarSign} />
+            <Metric title="Templates" value={`${summary.templateCount}`} detail="Reusable training products" icon={LibraryBig} />
+            <Metric title="Companies" value={`${summary.companyCount}`} detail="Customer tenants" icon={Building2} />
+            <Metric title="Assignments" value={`${summary.activeAssignmentCount}`} detail="Active customer rollouts" icon={Send} />
+            <Metric title="Avg budget" value={`$${summary.safeBudgetUsd.toFixed(2)}`} detail="Safe session budget" icon={DollarSign} />
           </div>
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">

@@ -4,10 +4,10 @@ import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { getAllTrainingTemplates } from "@/lib/repositories/trainingRepository";
+import { getPlatformTemplates } from "@/lib/adapters/platformAdapter";
 
-export default function PlatformTemplatesPage() {
-  const templates = getAllTrainingTemplates();
+export default async function PlatformTemplatesPage() {
+  const templates = await getPlatformTemplates();
 
   return (
     <AppShell>

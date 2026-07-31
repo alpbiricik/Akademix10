@@ -1,8 +1,12 @@
 import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getCompanyReports } from "@/lib/adapters/companyAdapter";
 
-export default function CompanyReportsPage() {
+export default async function CompanyReportsPage() {
+  const reports = await getCompanyReports();
+  const latestReport = reports[0];
+
   return (
     <AppShell>
       <ProtectedRoute allowedRoles={["company"]}>
@@ -15,12 +19,12 @@ export default function CompanyReportsPage() {
           <div className="grid gap-4 md:grid-cols-3">
             <ReportMetric label="Completion rate" value="74%" />
             <ReportMetric label="Average skill impact" value="+8.2" />
-            <ReportMetric label="Training performance" value="Healthy" />
+            <ReportMetric label="Training performance" value={latestReport ? "Healthy" : "No reports"} />
           </div>
           <Card className="rounded-lg border-slate-200">
             <CardHeader><CardTitle>Report boundary</CardTitle></CardHeader>
             <CardContent className="text-sm leading-6 text-slate-600">
-              Company admins see aggregate company reporting here. Individual learner reports remain in the learner namespace.
+              {latestReport?.completionSummary ?? "Company admins see aggregate company reporting here. Individual learner reports remain in the learner namespace."}
             </CardContent>
           </Card>
         </div>

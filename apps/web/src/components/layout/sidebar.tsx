@@ -9,7 +9,9 @@ export function Sidebar() {
   const [user, setUser] = useState<MockUserSession | null>(null);
 
   useEffect(() => {
-    setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
+    queueMicrotask(() => {
+      setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
+    });
   }, []);
 
   const navItems = useMemo(() => {

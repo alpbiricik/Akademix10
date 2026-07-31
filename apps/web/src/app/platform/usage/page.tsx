@@ -1,17 +1,19 @@
 import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getUsageSummary } from "@/lib/adapters/usageAdapter";
 
-const usage = [
-  ["Session model", "40 min"],
-  ["Avatar target", "7 min"],
-  ["Open/close target", "10"],
-  ["Buffered avatar usage", "8.05 min"],
-  ["Safe budget", "$1.25/session"],
-  ["Mock completed sessions", "684"],
-];
+export default async function PlatformUsagePage() {
+  const summary = await getUsageSummary("platform");
+  const usage = [
+    ["Session model", `${summary.totalDurationMin ?? 40} min`],
+    ["Avatar target", `${summary.avatarTargetMin ?? 7} min`],
+    ["Open/close target", `${summary.avatarToggleTarget ?? 10}`],
+    ["Buffered avatar usage", `${summary.bufferedAvatarMin ?? 8.05} min`],
+    ["Safe budget", `$${(summary.safeBudgetUsd ?? 1.25).toFixed(2)}/session`],
+    ["Mock completed sessions", "684"],
+  ];
 
-export default function PlatformUsagePage() {
   return (
     <AppShell>
       <ProtectedRoute allowedRoles={["platform"]}>

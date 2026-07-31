@@ -24,8 +24,10 @@ export function ProtectedRoute({
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
-    setReady(true);
+    queueMicrotask(() => {
+      setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
+      setReady(true);
+    });
   }, []);
 
   if (!ready) {

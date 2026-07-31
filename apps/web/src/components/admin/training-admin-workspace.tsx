@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bot, Building2, CheckCircle2, Send, Video } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,9 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { ASSIGNED_TRAININGS_STORAGE_KEY } from "@/lib/mock-data/training-catalog";
-import { getAllCompanies } from "@/lib/repositories/companyRepository";
-import { getAllTrainingTemplates } from "@/lib/repositories/trainingRepository";
+import { BROWSER_ASSIGNMENTS_STORAGE_KEY, assignTemplateToCompany, getPlatformCompanies, getPlatformTemplates } from "@/lib/adapters/platformAdapter";
+import type { CompanyDTO, TrainingTemplateDTO } from "@/lib/contracts/dtos";
 import type { Company, TrainingTemplate } from "@/lib/state-machine/types";
 
 interface AssignedTraining {
@@ -24,14 +23,29 @@ interface AssignedTraining {
 }
 
 export function TrainingAdminWorkspace() {
-  const templates = getAllTrainingTemplates();
-  const companies = getAllCompanies();
-  const [selectedTemplateId, setSelectedTemplateId] = useState(templates[0]?.id ?? "");
-  const [selectedCompanyId, setSelectedCompanyId] = useState(companies[0]?.id ?? "");
+  const [templates, setTemplates] = useState<Array<TrainingTemplate | TrainingTemplateDTO>>([]);
+  const [companies, setCompanies] = useState<Array<Company | CompanyDTO>>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [selectedCompanyId, setSelectedCompanyId] = useState("");
   const [customTitle, setCustomTitle] = useState("");
   const [videoNotes, setVideoNotes] = useState("Mock plan: context video, scenario video, recap video.");
   const [avatarCommands, setAvatarCommands] = useState("LiveAvatar Lite is concise, warm, and active only in critical coaching blocks.");
   const [sentAssignments, setSentAssignments] = useState<AssignedTraining[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([getPlatformTemplates(), getPlatformCompanies()]).then(([loadedTemplates, loadedCompanies]) => {
+      if (!active) return;
+      setTemplates(loadedTemplates);
+      setCompanies(loadedCompanies);
+      setSelectedTemplateId((current) => current || loadedTemplates[0]?.id || "");
+      setSelectedCompanyId((current) => current || loadedCompanies[0]?.id || "");
+      setCustomTitle((current) => current || loadedTemplates[0]?.title || "");
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.id === selectedTemplateId) ?? templates[0],
@@ -43,7 +57,7 @@ export function TrainingAdminWorkspace() {
     [selectedCompanyId, companies]
   );
 
-  function sendToCompany() {
+  async function sendToCompany() {
     if (!selectedTemplate || !selectedCompany) return;
 
     const assignment: AssignedTraining = {
@@ -56,13 +70,16 @@ export function TrainingAdminWorkspace() {
       status: "sent_to_company",
     };
 
+    await assignTemplateToCompany({ templateId: selectedTemplate.id, companyId: selectedCompany.id });
     const current = readAssignments();
     const next = [assignment, ...current.filter((item) => item.templateId !== assignment.templateId || item.companyId !== assignment.companyId)];
-    window.localStorage.setItem(ASSIGNED_TRAININGS_STORAGE_KEY, JSON.stringify(next));
+    window.localStorage.setItem(BROWSER_ASSIGNMENTS_STORAGE_KEY, JSON.stringify(next));
     setSentAssignments((items) => [assignment, ...items]);
   }
 
-  if (!selectedTemplate || !selectedCompany) return null;
+  if (!selectedTemplate || !selectedCompany) {
+    return <Card className="rounded-lg border-slate-200"><CardContent className="p-6 text-sm text-slate-600">Loading training factory...</CardContent></Card>;
+  }
 
   return (
     <Card className="rounded-lg border-slate-200">
@@ -152,7 +169,7 @@ export function TrainingAdminWorkspace() {
   );
 }
 
-function TemplatePreview({ template, company }: { template: TrainingTemplate; company: Company }) {
+function TemplatePreview({ template, company }: { template: TrainingTemplate | TrainingTemplateDTO; company: Company | CompanyDTO }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -191,7 +208,7 @@ function SmallMetric({ label, value }: { label: string; value: string }) {
 
 function readAssignments(): AssignedTraining[] {
   try {
-    const value = window.localStorage.getItem(ASSIGNED_TRAININGS_STORAGE_KEY);
+    const value = window.localStorage.getItem(BROWSER_ASSIGNMENTS_STORAGE_KEY);
     if (!value) return [];
     const parsed = JSON.parse(value);
     if (!Array.isArray(parsed)) return [];

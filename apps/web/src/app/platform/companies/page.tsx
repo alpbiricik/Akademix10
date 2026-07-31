@@ -2,9 +2,11 @@ import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { getAllCompanies } from "@/lib/repositories/companyRepository";
+import { getPlatformCompanies } from "@/lib/adapters/platformAdapter";
 
-export default function PlatformCompaniesPage() {
+export default async function PlatformCompaniesPage() {
+  const companies = await getPlatformCompanies();
+
   return (
     <AppShell>
       <ProtectedRoute allowedRoles={["platform"]}>
@@ -17,7 +19,7 @@ export default function PlatformCompaniesPage() {
           <Card className="rounded-lg border-slate-200">
             <CardHeader><CardTitle>Demo companies</CardTitle></CardHeader>
             <CardContent className="space-y-3">
-              {getAllCompanies().map((company, index) => (
+              {companies.map((company, index) => (
                 <div key={company.id} className="grid gap-3 rounded-md border border-slate-200 p-4 md:grid-cols-[1fr_auto_auto_auto] md:items-center">
                   <div>
                     <p className="font-semibold">{company.name}</p>

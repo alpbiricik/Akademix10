@@ -4,11 +4,10 @@ import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { mockUser } from "@/lib/mock-data";
-import { getAssignedTrainingsForLearner } from "@/lib/repositories/trainingRepository";
+import { getLearnerTrainings } from "@/lib/adapters/learnerAdapter";
 
-export default function LearnerTrainingsPage() {
-  const assignedTrainings = getAssignedTrainingsForLearner(mockUser.id);
+export default async function LearnerTrainingsPage() {
+  const assignedTrainings = await getLearnerTrainings();
 
   return (
     <AppShell>
@@ -25,10 +24,12 @@ export default function LearnerTrainingsPage() {
                 <CardHeader>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
-                      <CardTitle>{training.title}</CardTitle>
-                      <p className="mt-1 text-sm leading-6 text-slate-600">{training.description}</p>
+                      <CardTitle>{"title" in training ? training.title : `Training ${training.moduleId}`}</CardTitle>
+                      <p className="mt-1 text-sm leading-6 text-slate-600">
+                        {"description" in training ? training.description : "Assigned by your company for this learning path."}
+                      </p>
                     </div>
-                    <Badge variant="secondary">{training.stateIds.length} states</Badge>
+                    <Badge variant="secondary">{"stateIds" in training ? training.stateIds.length : 21} states</Badge>
                   </div>
                 </CardHeader>
                 <CardContent>
