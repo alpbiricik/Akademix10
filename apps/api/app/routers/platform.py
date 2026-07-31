@@ -1,12 +1,21 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.security import require_role
-from app.schemas.dtos import CompanyDTO, TrainingTemplateDTO
+from app.schemas.dtos import CompanyDTO, PlatformAggregateReportDTO, TrainingTemplateDTO
 from app.services import mock_store
+from app.services import report_endpoint_service
+from app.services.report_errors import ReportGenerationError
 
 router = APIRouter(prefix="/api/platform", tags=["platform"], dependencies=[Depends(require_role("platform"))])
+
+
+def raise_report_http_error(error: ReportGenerationError) -> None:
+    raise HTTPException(
+        status_code=report_endpoint_service.to_http_status(error),
+        detail={"code": error.code, "message": str(error)},
+    )
 
 
 @router.get("/templates", response_model=list[TrainingTemplateDTO])
@@ -55,6 +64,24 @@ def get_assignments() -> list[dict[str, object]]:
             "status": "active",
         }
     ]
+
+
+@router.get("/reports/aggregate", response_model=PlatformAggregateReportDTO)
+def get_platform_aggregate_report(
+    template_id: str | None = Query(default=None, alias="templateId"),
+    company_id: str | None = Query(default=None, alias="companyId"),
+    date_from: str | None = Query(default=None, alias="dateFrom"),
+    date_to: str | None = Query(default=None, alias="dateTo"),
+) -> PlatformAggregateReportDTO:
+    try:
+        return report_endpoint_service.get_platform_aggregate_report(
+            template_id=template_id,
+            company_id=company_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except ReportGenerationError as error:
+        raise_report_http_error(error)
 
 
 @router.get("/usage")

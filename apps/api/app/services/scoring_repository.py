@@ -23,6 +23,10 @@ def get_scoring_result(session_id: str, state_id: str) -> StructuredScoringResul
     return _results.get((session_id, state_id))
 
 
+def list_scoring_results() -> list[StructuredScoringResultDTO]:
+    return sorted(_results.values(), key=lambda item: (item.sessionId, item.stateId, item.generatedAt, item.answerRef))
+
+
 def reset_mock_scoring_store() -> None:
     _results.clear()
     _query_counts.clear()

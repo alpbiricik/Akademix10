@@ -6,6 +6,7 @@ Role = Literal["platform", "company", "learner"]
 TrainingStateType = Literal["intro", "video", "avatar", "question", "roleplay", "reflection", "feedback", "final"]
 TrainingSessionStatus = Literal["not_started", "in_progress", "completed"]
 ScoringRecommendation = Literal["continue", "retry_state", "review_feedback", "complete_state"]
+ReportType = Literal["learner_session", "company_aggregate", "platform_aggregate"]
 
 
 class AvatarPolicyDTO(BaseModel):
@@ -185,6 +186,119 @@ class StructuredScoringResultDTO(BaseModel):
     providerMetadata: ProviderMetadataDTO
     tokenCostMetadata: TokenCostMetadataDTO = Field(default_factory=TokenCostMetadataDTO)
     generatedAt: str
+
+
+class ReportReferenceDTO(BaseModel):
+    id: str
+    label: str | None = None
+    version: str | None = None
+
+
+class ReportCoverageDTO(BaseModel):
+    expectedStateCount: int = 0
+    evaluatedStateCount: int = 0
+    scoredSessionCount: int = 0
+    totalSessionCount: int = 0
+    scoringCoverage: float = 0
+    completionRate: float | None = None
+    isPartial: bool = False
+    missingStateIds: list[str] = Field(default_factory=list)
+    insufficientSample: bool = False
+
+
+class ReportDimensionSummaryDTO(BaseModel):
+    dimensionId: str
+    name: str
+    averageScore: float
+    resultCount: int
+
+
+class ReportSkillSummaryDTO(BaseModel):
+    skill: str
+    averageScore: float | None = None
+    averageDelta: float
+    resultCount: int
+
+
+class ReportGuardrailSummaryDTO(BaseModel):
+    totalFlags: int = 0
+    bySeverity: dict[str, int] = Field(default_factory=dict)
+    codes: list[str] = Field(default_factory=list)
+
+
+class ReportProviderCostSummaryDTO(BaseModel):
+    providers: list[str] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
+    inputTokens: int = 0
+    outputTokens: int = 0
+    estimatedCostUsd: float = 0
+    currency: str = "USD"
+
+
+class LearnerSessionReportDTO(BaseModel):
+    id: str
+    schemaVersion: str = "1.0"
+    sourceScoringSchemaVersions: list[str]
+    reportType: Literal["learner_session"] = "learner_session"
+    generatedAt: str
+    sessionId: str
+    learner: ReportReferenceDTO
+    company: ReportReferenceDTO
+    trainingTemplate: ReportReferenceDTO
+    trainingModule: ReportReferenceDTO
+    sessionStatus: TrainingSessionStatus
+    completedAt: str | None = None
+    evaluatedStateCount: int
+    overallScore: float | None
+    dimensionSummaries: list[ReportDimensionSummaryDTO]
+    skillSummaries: list[ReportSkillSummaryDTO]
+    strengths: list[str]
+    improvementAreas: list[str]
+    recommendedNextActions: list[ScoringRecommendation]
+    guardrailSummary: ReportGuardrailSummaryDTO
+    coverage: ReportCoverageDTO
+    rubricRefs: list[ReportReferenceDTO]
+    providerCostSummary: ReportProviderCostSummaryDTO
+
+
+class CompanyAggregateReportDTO(BaseModel):
+    id: str
+    schemaVersion: str = "1.0"
+    sourceScoringSchemaVersions: list[str]
+    reportType: Literal["company_aggregate"] = "company_aggregate"
+    generatedAt: str
+    company: ReportReferenceDTO
+    trainingTemplate: ReportReferenceDTO | None = None
+    filterSummary: dict[str, Any] = Field(default_factory=dict)
+    totalAssignedLearnerCount: int | None = None
+    completedSessionCount: int
+    scoredSessionCount: int
+    averageOverallScore: float | None
+    dimensionAverages: list[ReportDimensionSummaryDTO]
+    skillAverages: list[ReportSkillSummaryDTO]
+    strongestDimensions: list[ReportDimensionSummaryDTO]
+    developmentPriorityDimensions: list[ReportDimensionSummaryDTO]
+    strongestSkills: list[ReportSkillSummaryDTO]
+    developmentPrioritySkills: list[ReportSkillSummaryDTO]
+    guardrailSummary: ReportGuardrailSummaryDTO
+    coverage: ReportCoverageDTO
+    providerCostSummary: ReportProviderCostSummaryDTO
+
+
+class PlatformAggregateReportDTO(BaseModel):
+    id: str
+    schemaVersion: str = "1.0"
+    sourceScoringSchemaVersions: list[str]
+    reportType: Literal["platform_aggregate"] = "platform_aggregate"
+    generatedAt: str
+    companyCount: int
+    trainingTemplateCount: int
+    sessionSummary: ReportCoverageDTO
+    aggregateScoreSummary: dict[str, float | int | None]
+    dimensionTrends: list[ReportDimensionSummaryDTO]
+    skillTrends: list[ReportSkillSummaryDTO]
+    reportCoverage: ReportCoverageDTO
+    providerCostSummary: ReportProviderCostSummaryDTO
 
 
 class SessionFeedbackDTO(BaseModel):

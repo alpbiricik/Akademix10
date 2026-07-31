@@ -1,6 +1,6 @@
 import { apiGet, apiPost } from "@/lib/api/client";
 import { DATA_SOURCE_MODE } from "@/lib/api/config";
-import type { EnrollmentDTO, ReportDTO, TrainingSessionDTO } from "@/lib/contracts/dtos";
+import type { EnrollmentDTO, LearnerSessionReportDTO, ReportDTO, StructuredScoringResultDTO, TrainingSessionDTO } from "@/lib/contracts/dtos";
 import { mockFinalReport } from "@/lib/mock-data/sessions";
 import { mockUser } from "@/lib/mock-data/users";
 import { createOrResetDemoSession } from "@/lib/repositories/sessionRepository";
@@ -28,4 +28,14 @@ export function createLearnerSession() {
 export function getLearnerReport(sessionId: string) {
   if (DATA_SOURCE_MODE === "mock") return Promise.resolve(mockFinalReport);
   return apiGet<ReportDTO>(`/api/learner/reports/${sessionId}`, { mockRole: "learner" });
+}
+
+export function getLearnerSessionScoringResults(sessionId: string) {
+  if (DATA_SOURCE_MODE === "mock") return Promise.resolve<StructuredScoringResultDTO[]>([]);
+  return apiGet<StructuredScoringResultDTO[]>(`/api/learner/sessions/${sessionId}/scoring-results`, { mockRole: "learner" });
+}
+
+export function getLearnerStructuredReport(sessionId: string) {
+  if (DATA_SOURCE_MODE === "mock") return Promise.resolve<LearnerSessionReportDTO | null>(null);
+  return apiGet<LearnerSessionReportDTO>(`/api/learner/sessions/${sessionId}/report`, { mockRole: "learner" });
 }

@@ -1,6 +1,6 @@
 import { apiGet, apiPost } from "@/lib/api/client";
 import { DATA_SOURCE_MODE } from "@/lib/api/config";
-import type { CompanyDTO, TrainingTemplateDTO } from "@/lib/contracts/dtos";
+import type { CompanyDTO, PlatformAggregateReportDTO, TrainingTemplateDTO } from "@/lib/contracts/dtos";
 import { getAllCompanies } from "@/lib/repositories/companyRepository";
 import { getAllTrainingTemplates } from "@/lib/repositories/trainingRepository";
 
@@ -58,4 +58,15 @@ export function assignTemplateToCompany(input: { templateId: string; companyId: 
     return Promise.resolve({ status: "mock_assigned", ...input });
   }
   return apiPost<unknown>("/api/platform/assignments", input, { mockRole: "platform" });
+}
+
+export function getPlatformAggregateReport(filters?: { templateId?: string; companyId?: string; dateFrom?: string; dateTo?: string }) {
+  if (DATA_SOURCE_MODE === "mock") return Promise.resolve<PlatformAggregateReportDTO | null>(null);
+  const params = new URLSearchParams();
+  if (filters?.templateId) params.set("templateId", filters.templateId);
+  if (filters?.companyId) params.set("companyId", filters.companyId);
+  if (filters?.dateFrom) params.set("dateFrom", filters.dateFrom);
+  if (filters?.dateTo) params.set("dateTo", filters.dateTo);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return apiGet<PlatformAggregateReportDTO>(`/api/platform/reports/aggregate${suffix}`, { mockRole: "platform" });
 }

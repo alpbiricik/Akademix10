@@ -1,10 +1,25 @@
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal
 
 from fastapi import Header, HTTPException, status
 
 Role = Literal["platform", "company", "learner"]
 ALLOWED_ROLES: set[str] = {"platform", "company", "learner"}
+
+
+@dataclass(frozen=True)
+class MockPrincipal:
+    user_id: str
+    role: Role
+    company_id: str | None = None
+
+
+MOCK_PRINCIPALS: dict[str, MockPrincipal] = {
+    "platform": MockPrincipal(user_id="user-platform-demo", role="platform", company_id=None),
+    "company": MockPrincipal(user_id="user-company-demo", role="company", company_id="company-demo"),
+    "learner": MockPrincipal(user_id="user-learner-demo", role="learner", company_id="company-demo"),
+}
 
 
 def get_mock_role_from_header(x_mock_role: str | None = Header(default=None)) -> Role:
@@ -32,3 +47,8 @@ def require_role(*roles: Role) -> Callable[[str | None], Role]:
         return x_mock_role  # type: ignore[return-value]
 
     return dependency
+
+
+def get_mock_principal(x_mock_role: str | None = Header(default=None, alias="x-mock-role")) -> MockPrincipal:
+    role = get_mock_role_from_header(x_mock_role)
+    return MOCK_PRINCIPALS[role]

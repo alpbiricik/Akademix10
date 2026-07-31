@@ -1,13 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.core.security import require_role
-from app.schemas.dtos import EnrollmentDTO, ReportDTO, StructuredScoringResultDTO, TrainingSessionDTO
+from app.core.security import MockPrincipal, get_mock_principal, require_role
+from app.schemas.dtos import EnrollmentDTO, LearnerSessionReportDTO, ReportDTO, StructuredScoringResultDTO, TrainingSessionDTO
 from app.services import mock_store
+from app.services import report_endpoint_service
 from app.services import rubric_repository
 from app.services import scoring_repository
 from app.services import scoring_service
 from app.services import session_engine
+from app.services.report_errors import ReportGenerationError
 from app.services.scoring_errors import AnswerGuardrailError, InvalidProviderOutputError, InvalidRubricError, MaxQueriesPerStateError, ProviderRetryExhaustedError
 
 router = APIRouter(prefix="/api/learner", tags=["learner"], dependencies=[Depends(require_role("learner"))])
@@ -20,6 +22,13 @@ class StatePatchRequest(BaseModel):
 class AnswerRequest(BaseModel):
     stateId: str
     answerText: str
+
+
+def raise_report_http_error(error: ReportGenerationError) -> None:
+    raise HTTPException(
+        status_code=report_endpoint_service.to_http_status(error),
+        detail={"code": error.code, "message": str(error)},
+    )
 
 
 @router.get("/trainings", response_model=list[EnrollmentDTO])
@@ -84,11 +93,28 @@ def post_answer(session_id: str, body: AnswerRequest) -> dict[str, object]:
     return {"session": session.model_dump(), "feedback": feedback.model_dump(), "scoringResult": scoring_result.model_dump()}
 
 
+@router.get("/sessions/{session_id}/scoring-results", response_model=list[StructuredScoringResultDTO])
+def get_session_scoring_results(session_id: str, principal: MockPrincipal = Depends(get_mock_principal)) -> list[StructuredScoringResultDTO]:
+    try:
+        return report_endpoint_service.get_learner_scoring_results(session_id, principal)
+    except ReportGenerationError as error:
+        raise_report_http_error(error)
+
+
+@router.get("/sessions/{session_id}/report", response_model=LearnerSessionReportDTO)
+def get_session_structured_report(session_id: str, principal: MockPrincipal = Depends(get_mock_principal)) -> LearnerSessionReportDTO:
+    try:
+        return report_endpoint_service.get_learner_session_report(session_id, principal)
+    except ReportGenerationError as error:
+        raise_report_http_error(error)
+
+
 @router.get("/sessions/{session_id}/scoring/{state_id}", response_model=StructuredScoringResultDTO)
-def get_scoring_result(session_id: str, state_id: str) -> StructuredScoringResultDTO:
-    session = mock_store.sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found.")
+def get_scoring_result(session_id: str, state_id: str, principal: MockPrincipal = Depends(get_mock_principal)) -> StructuredScoringResultDTO:
+    try:
+        report_endpoint_service.get_session_for_learner(session_id, principal)
+    except ReportGenerationError as error:
+        raise_report_http_error(error)
     result = scoring_repository.get_scoring_result(session_id, state_id)
     if not result:
         raise HTTPException(status_code=404, detail="Scoring result not found.")

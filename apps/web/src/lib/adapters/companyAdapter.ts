@@ -1,6 +1,6 @@
 import { apiGet } from "@/lib/api/client";
 import { DATA_SOURCE_MODE } from "@/lib/api/config";
-import type { ReportDTO, TrainingTemplateDTO, UserDTO } from "@/lib/contracts/dtos";
+import type { CompanyAggregateReportDTO, ReportDTO, TrainingTemplateDTO, UserDTO } from "@/lib/contracts/dtos";
 import { mockFinalReport } from "@/lib/mock-data/sessions";
 import { users } from "@/lib/mock-data/users";
 import { getTrainingsAssignedToCompany } from "@/lib/repositories/companyRepository";
@@ -41,4 +41,14 @@ export function getCompanyReports() {
 export function getCompanyUsage() {
   if (DATA_SOURCE_MODE === "mock") return Promise.resolve({ scope: "company", mode: "mock" });
   return apiGet<unknown>("/api/company/usage", { mockRole: "company" });
+}
+
+export function getCompanyAggregateReport(filters?: { templateId?: string; dateFrom?: string; dateTo?: string }) {
+  if (DATA_SOURCE_MODE === "mock") return Promise.resolve<CompanyAggregateReportDTO | null>(null);
+  const params = new URLSearchParams();
+  if (filters?.templateId) params.set("templateId", filters.templateId);
+  if (filters?.dateFrom) params.set("dateFrom", filters.dateFrom);
+  if (filters?.dateTo) params.set("dateTo", filters.dateTo);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return apiGet<CompanyAggregateReportDTO>(`/api/company/reports/aggregate${suffix}`, { mockRole: "company" });
 }

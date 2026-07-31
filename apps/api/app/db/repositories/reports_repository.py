@@ -1,5 +1,7 @@
 from app.services import mock_store
 
+_generated_reports: dict[str, object] = {}
+
 
 class ReportsRepository:
     """Report persistence boundary backed by mock_store for now."""
@@ -10,5 +12,14 @@ class ReportsRepository:
         return None
 
     def create_report(self, report):
-        # TODO: persist generated reports in Supabase.
+        _generated_reports[getattr(report, "id", f"report-{len(_generated_reports) + 1}")] = report
         return report
+
+    def get_generated_report(self, report_id: str):
+        return _generated_reports.get(report_id)
+
+    def list_generated_reports(self):
+        return [value for _, value in sorted(_generated_reports.items())]
+
+    def clear_generated_reports(self):
+        _generated_reports.clear()

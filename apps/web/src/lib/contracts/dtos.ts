@@ -175,6 +175,121 @@ export interface StructuredScoringResultDTO {
   generatedAt: ISODateTimeString;
 }
 
+export type ReportTypeDTO = "learner_session" | "company_aggregate" | "platform_aggregate";
+
+export interface ReportReferenceDTO {
+  id: string;
+  label: string | null;
+  version: string | null;
+}
+
+export interface ReportCoverageDTO {
+  expectedStateCount: number;
+  evaluatedStateCount: number;
+  scoredSessionCount: number;
+  totalSessionCount: number;
+  scoringCoverage: number;
+  completionRate: number | null;
+  isPartial: boolean;
+  missingStateIds: string[];
+  insufficientSample: boolean;
+}
+
+export interface ReportDimensionSummaryDTO {
+  dimensionId: string;
+  name: string;
+  averageScore: number;
+  resultCount: number;
+}
+
+export interface ReportSkillSummaryDTO {
+  skill: string;
+  averageScore: number | null;
+  averageDelta: number;
+  resultCount: number;
+}
+
+export interface ReportGuardrailSummaryDTO {
+  totalFlags: number;
+  bySeverity: Record<string, number>;
+  codes: string[];
+}
+
+export interface ReportProviderCostSummaryDTO {
+  providers: string[];
+  models: string[];
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number;
+  currency: string;
+}
+
+export interface LearnerSessionReportDTO {
+  id: string;
+  schemaVersion: string;
+  sourceScoringSchemaVersions: string[];
+  reportType: "learner_session";
+  generatedAt: ISODateTimeString;
+  sessionId: string;
+  learner: ReportReferenceDTO;
+  company: ReportReferenceDTO;
+  trainingTemplate: ReportReferenceDTO;
+  trainingModule: ReportReferenceDTO;
+  sessionStatus: TrainingSessionStatus;
+  completedAt: ISODateTimeString | null;
+  evaluatedStateCount: number;
+  overallScore: number | null;
+  dimensionSummaries: ReportDimensionSummaryDTO[];
+  skillSummaries: ReportSkillSummaryDTO[];
+  strengths: string[];
+  improvementAreas: string[];
+  recommendedNextActions: ScoringRecommendationDTO[];
+  guardrailSummary: ReportGuardrailSummaryDTO;
+  coverage: ReportCoverageDTO;
+  rubricRefs: ReportReferenceDTO[];
+  providerCostSummary: ReportProviderCostSummaryDTO;
+}
+
+export interface CompanyAggregateReportDTO {
+  id: string;
+  schemaVersion: string;
+  sourceScoringSchemaVersions: string[];
+  reportType: "company_aggregate";
+  generatedAt: ISODateTimeString;
+  company: ReportReferenceDTO;
+  trainingTemplate: ReportReferenceDTO | null;
+  filterSummary: DTORecord;
+  totalAssignedLearnerCount: number | null;
+  completedSessionCount: number;
+  scoredSessionCount: number;
+  averageOverallScore: number | null;
+  dimensionAverages: ReportDimensionSummaryDTO[];
+  skillAverages: ReportSkillSummaryDTO[];
+  strongestDimensions: ReportDimensionSummaryDTO[];
+  developmentPriorityDimensions: ReportDimensionSummaryDTO[];
+  strongestSkills: ReportSkillSummaryDTO[];
+  developmentPrioritySkills: ReportSkillSummaryDTO[];
+  guardrailSummary: ReportGuardrailSummaryDTO;
+  coverage: ReportCoverageDTO;
+  providerCostSummary: ReportProviderCostSummaryDTO;
+}
+
+export interface PlatformAggregateReportDTO {
+  id: string;
+  schemaVersion: string;
+  sourceScoringSchemaVersions: string[];
+  reportType: "platform_aggregate";
+  generatedAt: ISODateTimeString;
+  companyCount: number;
+  trainingTemplateCount: number;
+  sessionSummary: ReportCoverageDTO;
+  aggregateScoreSummary: Record<string, number | null>;
+  dimensionTrends: ReportDimensionSummaryDTO[];
+  skillTrends: ReportSkillSummaryDTO[];
+  reportCoverage: ReportCoverageDTO;
+  providerCostSummary: ReportProviderCostSummaryDTO;
+}
+
 export interface SkillScoreDTO {
   id: string;
   sessionId: string;
