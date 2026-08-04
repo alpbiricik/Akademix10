@@ -36,7 +36,7 @@ This draft documents future FastAPI endpoints. Phase 2B does not implement API r
 | GET | /learner/sessions/:sessionId | learner | None | TrainingSessionDTO | Reads own session state. |
 | PATCH | /learner/sessions/:sessionId/state | learner | UpdateTrainingSessionStateRequest | TrainingSessionDTO | Persists current state progress. |
 | POST | /learner/sessions/:sessionId/answers | learner | CreateSessionAnswerRequest | SessionAnswerDTO | Submits an answer for a state. |
-| GET | /learner/reports/:sessionId | learner | None | ReportDTO | Reads own generated session report. |
+| GET | /learner/sessions/:sessionId/report | learner | None | ReportDTO | Reads own generated session report. |
 
 ## Usage And Cost
 

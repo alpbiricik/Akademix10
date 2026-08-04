@@ -30,9 +30,9 @@ The canonical routes are role-scoped:
 - `/company/dashboard`
 - `/learner/dashboard`
 - `/learner/session/[sessionId]`
-- `/learner/report/[sessionId]`
+- `/learner/sessions/[sessionId]/report`
 
-Legacy/deprecated redirects are restored for compatibility:
+Legacy/deprecated redirects are restored for compatibility where still intentionally supported:
 
 - `/dashboard`
 - `/admin`
@@ -40,4 +40,3 @@ Legacy/deprecated redirects are restored for compatibility:
 - `/platform`
 - `/company`
 - `/session/[sessionId]`
-- `/report/[sessionId]`

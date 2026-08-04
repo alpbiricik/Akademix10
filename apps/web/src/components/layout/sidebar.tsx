@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { BarChart3, Building2, ClipboardList, Home, Layers, LogIn, PlayCircle, ShieldCheck, Users } from "lucide-react";
+import { BarChart3 } from "lucide-react";
+import { getLoginNavigationItem, getRoleNavigationItems } from "@/components/layout/navigation-items";
 import { MOCK_USER_STORAGE_KEY, parseMockUser, roleLabels, type MockUserSession } from "@/lib/mock-auth";
 
 export function Sidebar() {
@@ -14,37 +15,7 @@ export function Sidebar() {
     });
   }, []);
 
-  const navItems = useMemo(() => {
-    if (!user) return [{ title: "Login", href: "/login", icon: LogIn }];
-    if (user.role === "platform") {
-      return [
-        { title: "Platform Dashboard", href: "/platform/dashboard", icon: ShieldCheck },
-        { title: "Training Templates", href: "/platform/templates", icon: Layers },
-        { title: "Companies", href: "/platform/companies", icon: Building2 },
-        { title: "Assignments", href: "/platform/assignments", icon: ClipboardList },
-        { title: "Usage / Cost", href: "/platform/usage", icon: BarChart3 },
-        { title: "Login", href: "/login", icon: LogIn },
-      ];
-    }
-    if (user.role === "company") {
-      return [
-        { title: "Company Dashboard", href: "/company/dashboard", icon: Building2 },
-        { title: "Assigned Trainings", href: "/company/trainings", icon: Layers },
-        { title: "Employees", href: "/company/employees", icon: Users },
-        { title: "Reports", href: "/company/reports", icon: ClipboardList },
-        { title: "Usage / Cost", href: "/company/usage", icon: BarChart3 },
-        { title: "Login", href: "/login", icon: LogIn },
-      ];
-    }
-
-    return [
-      { title: "My Dashboard", href: "/learner/dashboard", icon: Home },
-      { title: "My Trainings", href: "/learner/trainings", icon: Layers },
-      { title: "Start Demo Session", href: "/learner/session/demo-session-1", icon: PlayCircle },
-      { title: "My Report", href: "/learner/report/demo-session-1", icon: ClipboardList },
-      { title: "Login", href: "/login", icon: LogIn },
-    ];
-  }, [user]);
+  const navItems = useMemo(() => (user ? getRoleNavigationItems(user, true) : [getLoginNavigationItem()]), [user]);
 
   return (
     <aside className="hidden w-64 shrink-0 lg:block">

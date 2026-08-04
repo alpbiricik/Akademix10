@@ -38,6 +38,7 @@ def get_learner_trainings() -> list[EnrollmentDTO]:
 
 @router.post("/sessions", response_model=TrainingSessionDTO)
 def create_session() -> TrainingSessionDTO:
+    scoring_repository.reset_session_scoring_store("demo-session-1")
     mock_store.sessions["demo-session-1"] = mock_store.clone_session()
     return mock_store.sessions["demo-session-1"]
 

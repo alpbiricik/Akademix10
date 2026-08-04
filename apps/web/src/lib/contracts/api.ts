@@ -141,10 +141,10 @@ export const API_ENDPOINTS = {
     },
     {
       method: "GET",
-      path: "/learner/reports/:sessionId",
+      path: "/learner/sessions/:sessionId/report",
       description: "Read the current learner's generated report for a session.",
       requestTypeName: "LearnerReportRequest",
-      responseTypeName: "ReportDTO",
+      responseTypeName: "LearnerSessionReportDTO",
       requiredRole: "learner",
     },
   ],

@@ -1,6 +1,7 @@
 import { apiGet, apiPost } from "@/lib/api/client";
 import { DATA_SOURCE_MODE } from "@/lib/api/config";
 import type { CompanyDTO, PlatformAggregateReportDTO, TrainingTemplateDTO } from "@/lib/contracts/dtos";
+import { mockPlatformAggregateReport } from "@/lib/mock-data/reports";
 import { getAllCompanies } from "@/lib/repositories/companyRepository";
 import { getAllTrainingTemplates } from "@/lib/repositories/trainingRepository";
 
@@ -61,7 +62,7 @@ export function assignTemplateToCompany(input: { templateId: string; companyId: 
 }
 
 export function getPlatformAggregateReport(filters?: { templateId?: string; companyId?: string; dateFrom?: string; dateTo?: string }) {
-  if (DATA_SOURCE_MODE === "mock") return Promise.resolve<PlatformAggregateReportDTO | null>(null);
+  if (DATA_SOURCE_MODE === "mock") return Promise.resolve(mockPlatformAggregateReport);
   const params = new URLSearchParams();
   if (filters?.templateId) params.set("templateId", filters.templateId);
   if (filters?.companyId) params.set("companyId", filters.companyId);

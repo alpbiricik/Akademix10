@@ -1,12 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { LogIn, PlayCircle } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { LogIn, Menu, PlayCircle, X } from "lucide-react";
+import { getRoleNavigationItems } from "@/components/layout/navigation-items";
 import { MOCK_USER_STORAGE_KEY, parseMockUser, roleDestinations, roleLabels, type MockUserSession } from "@/lib/mock-auth";
 
 export function Topbar() {
   const [user, setUser] = useState<MockUserSession | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -14,36 +17,31 @@ export function Topbar() {
     });
   }, []);
 
-  const navItems = useMemo(() => {
-    if (!user) return [];
-    if (user.role === "platform") {
-      return [
-        { title: "Platform", href: "/platform/dashboard" },
-        { title: "Templates", href: "/platform/templates" },
-        { title: "Companies", href: "/platform/companies" },
-        { title: "Usage", href: "/platform/usage" },
-      ];
-    }
-    if (user.role === "company") {
-      return [
-        { title: "Company", href: "/company/dashboard" },
-        { title: "Trainings", href: "/company/trainings" },
-        { title: "Employees", href: "/company/employees" },
-        { title: "Reports", href: "/company/reports" },
-      ];
+  const navItems = useMemo(() => getRoleNavigationItems(user), [user]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      if (menuRef.current?.contains(event.target as Node)) return;
+      setMenuOpen(false);
     }
 
-    return [
-      { title: "Dashboard", href: "/learner/dashboard" },
-      { title: "Trainings", href: "/learner/trainings" },
-      { title: "Demo Session", href: "/learner/session/demo-session-1" },
-      { title: "Report", href: "/learner/report/demo-session-1" },
-    ];
-  }, [user]);
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setMenuOpen(false);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [menuOpen]);
 
   return (
     <header className="border-b border-white/10 bg-[#25214d] text-white shadow-sm">
-      <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
+      <div ref={menuRef} className="relative mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
         <Link href="/" className="text-sm font-semibold text-white">
           AkademX10 XAI
         </Link>
@@ -54,11 +52,23 @@ export function Topbar() {
               href={item.href}
               className="rounded-md px-2.5 py-1.5 text-sm font-medium text-white/75 transition hover:bg-white/10 hover:text-white"
             >
-              {item.title}
+              {item.shortTitle}
             </Link>
           ))}
         </nav>
         <div className="flex items-center gap-2">
+          {navItems.length ? (
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/15 bg-white/10 text-white shadow-xs transition hover:bg-white/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#18c5b5] md:hidden"
+              aria-label="Open role navigation menu"
+              aria-expanded={menuOpen}
+              aria-controls="mobile-role-navigation"
+              onClick={() => setMenuOpen((current) => !current)}
+            >
+              {menuOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+            </button>
+          ) : null}
           {user ? (
             <span className="hidden rounded-md bg-white/10 px-2.5 py-1.5 text-xs font-medium text-white/80 sm:inline-flex">
               {roleLabels[user.role]}
@@ -67,18 +77,38 @@ export function Topbar() {
           {user?.role === "learner" ? (
             <Link href="/learner/session/demo-session-1" className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-md border border-white/15 bg-white/10 px-2.5 text-sm font-medium text-white shadow-xs transition hover:bg-white/15">
               <PlayCircle className="h-4 w-4" />
-              Demo Session
+              <span className="hidden sm:inline">Demo Session</span>
             </Link>
           ) : (
             <Link href={user ? roleDestinations[user.role] : "/login"} className="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-white/15 bg-white/10 px-2.5 text-sm font-medium text-white shadow-xs transition hover:bg-white/15">
-              {user ? "Workspace" : "Choose Role"}
+              <span className="hidden sm:inline">{user ? "Workspace" : "Choose Role"}</span>
+              <span className="sm:hidden">{user ? "Home" : "Role"}</span>
             </Link>
           )}
           <Link href="/login" className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-md bg-[#18c5b5] px-2.5 text-sm font-medium text-[#102b3f] transition hover:bg-[#35d6c6]">
             <LogIn className="h-4 w-4" />
-            Login
+            <span className="hidden sm:inline">Login</span>
           </Link>
         </div>
+        {menuOpen ? (
+          <nav
+            id="mobile-role-navigation"
+            className="absolute left-4 right-4 top-full z-50 mt-2 max-h-[calc(100vh-5rem)] overflow-y-auto rounded-lg border border-slate-200 bg-white p-2 text-[#25214d] shadow-lg md:hidden"
+            aria-label="Role navigation"
+          >
+            {navItems.map(({ title, href, icon: Icon }) => (
+              <Link
+                key={`${title}-${href}`}
+                href={href}
+                className="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition hover:bg-[#eef5ff] hover:text-[#0967e8] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0967e8]"
+                onClick={() => setMenuOpen(false)}
+              >
+                <Icon className="h-4 w-4 text-[#0967e8]" />
+                {title}
+              </Link>
+            ))}
+          </nav>
+        ) : null}
       </div>
     </header>
   );

@@ -229,6 +229,34 @@ class ReportEndpointTests(unittest.TestCase):
         self.assertIn("feedback", payload)
         self.assertIn("scoringResult", payload)
 
+    def test_reset_demo_session_clears_scoring_query_count(self):
+        scoring_repository.reset_mock_scoring_store()
+        state_id = mock_store.training_states[3].id
+        body = {"stateId": state_id, "answerText": "I understand the concern. What outcome matters most?"}
+        for _ in range(3):
+            status, _ = asgi_request("POST", f"/api/learner/sessions/{self.session.id}/answers", "learner", body=body)
+            self.assertEqual(status, 200)
+        status, payload = asgi_request("POST", f"/api/learner/sessions/{self.session.id}/answers", "learner", body=body)
+        self.assertEqual(status, 429)
+        self.assertEqual(payload["detail"]["code"], "max_queries_per_state")
+
+        reset_status, _ = asgi_request("POST", "/api/learner/sessions", "learner")
+        self.assertEqual(reset_status, 200)
+        status, payload = asgi_request("POST", "/api/learner/sessions/demo-session-1/answers", "learner", body=body)
+        self.assertEqual(status, 200)
+        self.assertIn("scoringResult", payload)
+
+    def test_reset_demo_session_returns_pristine_start_state(self):
+        status, payload = asgi_request("PATCH", "/api/learner/sessions/demo-session-1/state", "learner", body={"action": "next"})
+        self.assertEqual(status, 200)
+        self.assertNotEqual(payload["currentStateId"], mock_store.training_states[0].id)
+
+        reset_status, reset_payload = asgi_request("POST", "/api/learner/sessions", "learner")
+        self.assertEqual(reset_status, 200)
+        self.assertEqual(reset_payload["currentStateId"], mock_store.training_states[0].id)
+        self.assertEqual(reset_payload["completedStateIds"], [])
+        self.assertEqual(reset_payload["answers"], [])
+
     def test_get_requests_do_not_create_provider_scoring(self):
         before = len(scoring_repository.list_scoring_results())
         asgi_request("GET", "/api/company/reports/aggregate", "company")

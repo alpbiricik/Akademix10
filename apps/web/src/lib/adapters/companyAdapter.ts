@@ -2,6 +2,7 @@ import { apiGet } from "@/lib/api/client";
 import { DATA_SOURCE_MODE } from "@/lib/api/config";
 import type { CompanyAggregateReportDTO, ReportDTO, TrainingTemplateDTO, UserDTO } from "@/lib/contracts/dtos";
 import { mockFinalReport } from "@/lib/mock-data/sessions";
+import { mockCompanyAggregateReport } from "@/lib/mock-data/reports";
 import { users } from "@/lib/mock-data/users";
 import { getTrainingsAssignedToCompany } from "@/lib/repositories/companyRepository";
 
@@ -44,7 +45,7 @@ export function getCompanyUsage() {
 }
 
 export function getCompanyAggregateReport(filters?: { templateId?: string; dateFrom?: string; dateTo?: string }) {
-  if (DATA_SOURCE_MODE === "mock") return Promise.resolve<CompanyAggregateReportDTO | null>(null);
+  if (DATA_SOURCE_MODE === "mock") return Promise.resolve({ ...mockCompanyAggregateReport, filterSummary: filters ?? {} });
   const params = new URLSearchParams();
   if (filters?.templateId) params.set("templateId", filters.templateId);
   if (filters?.dateFrom) params.set("dateFrom", filters.dateFrom);

@@ -1,6 +1,6 @@
 import { DATA_SOURCE_MODE } from "@/lib/api/config";
 import { getCompanyEmployees, getCompanyReports, getCompanyTrainings, getCompanyUsage } from "@/lib/adapters/companyAdapter";
-import { getLearnerReport, getLearnerTrainings } from "@/lib/adapters/learnerAdapter";
+import { getLearnerStructuredReport, getLearnerTrainings } from "@/lib/adapters/learnerAdapter";
 import { assignTemplateToCompany, getPlatformCompanies, getPlatformTemplates, getPlatformUsage } from "@/lib/adapters/platformAdapter";
 import { completeCurrentState, getSession, getSessionStates, moveToNextState, resetDemoSession, submitSessionAnswer } from "@/lib/adapters/sessionAdapter";
 import { createSessionCostLog, createSessionEvent, getSessionUsage } from "@/lib/adapters/usageAdapter";
@@ -58,12 +58,12 @@ export async function smokeTestLearnerApi() {
   return runSuite("Learner API", async () => {
     const trainings = await getLearnerTrainings();
     const session = await resetDemoSession();
-    const report = await getLearnerReport(DEMO_SESSION_ID);
+    const report = await getLearnerStructuredReport(DEMO_SESSION_ID);
 
     return [
       countCheck("GET /api/learner/trainings", trainings.length),
       objectCheck("POST /api/learner/sessions", session),
-      objectCheck("GET /api/learner/reports/demo-session-1", report),
+      objectCheck("GET /api/learner/sessions/demo-session-1/report", report),
     ];
   });
 }

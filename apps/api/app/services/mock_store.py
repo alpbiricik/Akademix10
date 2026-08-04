@@ -121,7 +121,7 @@ demo_session = TrainingSessionDTO(
     usage=get_default_session_usage(),
 )
 
-sessions = {"demo-session-1": demo_session}
+sessions = {"demo-session-1": deepcopy(demo_session)}
 
 enrollments = [
     EnrollmentDTO(id="enrollment-demo", companyId="company-demo", learnerUserId="user-learner-demo", assignmentId="assignment-demo", templateId="template-sales-communication", moduleId="communication-sales-101", status="in_progress", assignedAt=NOW)
@@ -142,6 +142,8 @@ demo_report = ReportDTO(
 
 
 def clone_session(session_id: str = "demo-session-1") -> TrainingSessionDTO:
+    if session_id == demo_session.id:
+        return deepcopy(demo_session)
     return deepcopy(sessions[session_id])
 
 

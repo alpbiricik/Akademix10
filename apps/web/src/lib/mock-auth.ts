@@ -23,9 +23,9 @@ export const roleLabels: Record<MockRole, string> = {
 };
 
 export const protectedRoutes: Record<MockRole, string[]> = {
-  platform: ["/platform/dashboard", "/platform/templates", "/platform/companies", "/platform/assignments", "/platform/usage"],
+  platform: ["/platform/dashboard", "/platform/templates", "/platform/companies", "/platform/assignments", "/platform/reports", "/platform/usage"],
   company: ["/company/dashboard", "/company/trainings", "/company/employees", "/company/reports", "/company/usage"],
-  learner: ["/learner/dashboard", "/learner/trainings", "/learner/session/demo-session-1", "/learner/report/demo-session-1"],
+  learner: ["/learner/dashboard", "/learner/trainings", "/learner/session/demo-session-1", "/learner/sessions/demo-session-1/report"],
 };
 
 export function parseMockUser(value: string | null): MockUserSession | null {

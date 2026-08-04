@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, BadgeDollarSign, Bot, CheckCircle2, Circle, CircleDot, FileText, MessageSquareText, PlayCircle, RotateCcw, Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import { formatUsd, getStateTypeLabel, getStateTypeTone, isInteractiveState, sor
 import { getLearnerTrainings } from "@/lib/adapters/learnerAdapter";
 import { getPlatformTemplates } from "@/lib/adapters/platformAdapter";
 import { completeCurrentState, getSession, getSessionStates, moveToNextState, moveToPreviousState, resetDemoSession, submitSessionAnswer } from "@/lib/adapters/sessionAdapter";
+import { ApiError } from "@/lib/api/errors";
 import type { MockAIFeedback, TrainingModule, TrainingSession, TrainingState, TrainingTemplate } from "@/lib/state-machine/types";
 
 export function SessionRunner({ sessionId }: { sessionId: string }) {
@@ -27,6 +28,9 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
   const [trainings, setTrainings] = useState<TrainingModule[]>([]);
   const [templates, setTemplates] = useState<TrainingTemplate[]>([]);
   const [draft, setDraft] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitInFlightRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -58,6 +62,7 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     if (!session || !currentStateId) return;
     queueMicrotask(() => {
       setDraft(session.answers.find((item) => item.stateId === currentStateId)?.answerText ?? "");
+      setSubmitError(null);
     });
   }, [currentStateId, session]);
 
@@ -67,9 +72,19 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
   }
 
   async function handleSubmit() {
-    if (!session || !currentState || !draft.trim()) return;
-    const updated = await submitSessionAnswer(session.id, { stateId: currentState.id, answerText: draft.trim() });
-    if (isTrainingSession(updated)) applySession(updated);
+    if (!session || !currentState || !draft.trim() || submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
+    setIsSubmitting(true);
+    setSubmitError(null);
+    try {
+      const updated = await submitSessionAnswer(session.id, { stateId: currentState.id, answerText: draft.trim() });
+      if (isTrainingSession(updated)) applySession(updated);
+    } catch (error) {
+      setSubmitError(getSubmitErrorMessage(error));
+    } finally {
+      submitInFlightRef.current = false;
+      setIsSubmitting(false);
+    }
   }
 
   async function handleComplete() {
@@ -82,12 +97,14 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     if (!session) return;
     const updated = await moveToNextState(session.id);
     if (isTrainingSession(updated)) applySession(updated);
+    setSubmitError(null);
   }
 
   async function handleMovePrevious() {
     if (!session) return;
     const updated = await moveToPreviousState(session.id);
     if (isTrainingSession(updated)) applySession(updated);
+    setSubmitError(null);
   }
 
   async function handleReset() {
@@ -96,6 +113,7 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     setStates(resetStates as TrainingState[]);
     setSession({ ...reset, usage: calculateMockUsage(reset, resetStates as TrainingState[]) });
     setDraft("");
+    setSubmitError(null);
   }
 
   if (!session || !currentState) {
@@ -116,7 +134,7 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
               <RotateCcw className="h-4 w-4" />
               Reset Demo Session
             </Button>
-            <Link href={`/learner/report/${session.id}`} className="inline-flex h-9 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white px-2.5 text-sm font-medium text-slate-900 shadow-xs transition hover:bg-slate-100">
+            <Link href={`/learner/sessions/${session.id}/report`} className="inline-flex h-9 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white px-2.5 text-sm font-medium text-slate-900 shadow-xs transition hover:bg-slate-100">
               Open Report
             </Link>
           </div>
@@ -147,7 +165,20 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
                 <div className="mt-3 flex flex-wrap gap-2">{currentState.skillTags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>)}</div>
               </div>
               {isInteractiveState(currentState) ? (
-                <InteractionBox state={currentState} value={draft} feedback={currentFeedback} onChange={setDraft} onSubmit={handleSubmit} />
+                <InteractionBox
+                  state={currentState}
+                  value={draft}
+                  feedback={currentFeedback}
+                  error={submitError}
+                  isSubmitting={isSubmitting}
+                  canMoveNext={canMoveNext(session, sortedStates)}
+                  onChange={(value) => {
+                    setDraft(value);
+                    if (submitError) setSubmitError(null);
+                  }}
+                  onSubmit={handleSubmit}
+                  onMoveNext={handleMoveNext}
+                />
               ) : null}
               <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-5">
                 <Button variant="outline" onClick={handleMovePrevious} disabled={!canMovePrevious(session, sortedStates)}><ArrowLeft className="h-4 w-4" />Previous State</Button>
@@ -193,17 +224,71 @@ function StateShell({ icon, title, text, tone, dark }: { icon?: ReactNode; title
   );
 }
 
-function InteractionBox({ state, value, feedback, onChange, onSubmit }: { state: TrainingState; value: string; feedback?: MockAIFeedback; onChange: (value: string) => void; onSubmit: () => void }) {
+function InteractionBox({
+  state,
+  value,
+  feedback,
+  error,
+  isSubmitting,
+  canMoveNext,
+  onChange,
+  onSubmit,
+  onMoveNext,
+}: {
+  state: TrainingState;
+  value: string;
+  feedback?: MockAIFeedback;
+  error: string | null;
+  isSubmitting: boolean;
+  canMoveNext: boolean;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  onMoveNext: () => void;
+}) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-4">
       <p className="font-medium text-slate-950">Your response</p>
       <Textarea className="mt-3 min-h-32" value={value} onChange={(event) => onChange(event.target.value)} placeholder={`Type your ${state.type} response here...`} />
+      {error ? (
+        <div role="alert" className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-950">
+          <p>{error}</p>
+          {canMoveNext ? (
+            <Button type="button" variant="outline" className="mt-3" onClick={onMoveNext}>
+              Continue to next state
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="mt-3 flex justify-end">
-        <Button type="button" onClick={onSubmit} disabled={!value.trim()}><Sparkles className="h-4 w-4" />Submit for AI Feedback</Button>
+        <Button type="button" onClick={onSubmit} disabled={!value.trim() || isSubmitting}>
+          <Sparkles className="h-4 w-4" />
+          {isSubmitting ? "Submitting..." : "Submit for AI Feedback"}
+        </Button>
       </div>
       {feedback ? <FeedbackCard feedback={feedback} /> : null}
     </div>
   );
+}
+
+function getSubmitErrorMessage(error: unknown) {
+  if (error instanceof ApiError) {
+    const code = extractApiErrorCode(error.payload);
+    if (error.status === 429 || code === "max_queries_per_state") {
+      return "This state has reached its AI feedback limit. Your answer is still here. Continue to the next state or reset the demo session for a clean validation run.";
+    }
+    if (error.status === 422) return "This answer cannot be scored yet. Check the response and submit again.";
+    if (error.status === 0) return "The scoring service could not be reached.";
+  }
+  return "The answer could not be submitted. Your text was not cleared.";
+}
+
+function extractApiErrorCode(payload: unknown) {
+  if (!payload || typeof payload !== "object" || !("detail" in payload)) return null;
+  const detail = (payload as { detail?: unknown }).detail;
+  if (!detail || typeof detail !== "object" || !("code" in detail)) return null;
+  const code = (detail as { code?: unknown }).code;
+  return typeof code === "string" ? code : null;
 }
 
 function FeedbackCard({ feedback }: { feedback: MockAIFeedback }) {

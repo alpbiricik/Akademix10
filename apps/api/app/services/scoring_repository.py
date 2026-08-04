@@ -30,3 +30,10 @@ def list_scoring_results() -> list[StructuredScoringResultDTO]:
 def reset_mock_scoring_store() -> None:
     _results.clear()
     _query_counts.clear()
+
+
+def reset_session_scoring_store(session_id: str) -> None:
+    for key in [key for key in _results if key[0] == session_id]:
+        del _results[key]
+    for key in [key for key in _query_counts if key[0] == session_id]:
+        del _query_counts[key]
