@@ -1,8 +1,11 @@
 import asyncio
 import json
+import os
 import unittest
 from copy import deepcopy
 from urllib.parse import urlencode
+
+os.environ["DATABASE_MODE"] = "mock"
 
 from app.main import app
 from app.schemas.dtos import DimensionScoreDTO, ProviderMetadataDTO, SkillImpactDTO, StructuredScoringResultDTO

@@ -12,6 +12,8 @@ import {
   type MockRole,
   type MockUserSession,
 } from "@/lib/mock-auth";
+import { DATA_SOURCE_MODE } from "@/lib/api/config";
+import { getTrustedProfile, refreshStoredSession } from "@/lib/supabase-auth";
 
 export function ProtectedRoute({
   allowedRoles,
@@ -25,8 +27,16 @@ export function ProtectedRoute({
 
   useEffect(() => {
     queueMicrotask(() => {
-      setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
-      setReady(true);
+      if (DATA_SOURCE_MODE === "mock") {
+        setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
+        setReady(true);
+        return;
+      }
+      getTrustedProfile()
+        .catch(() => refreshStoredSession())
+        .then((profile) => setUser(profile))
+        .catch(() => setUser(null))
+        .finally(() => setReady(true));
     });
   }, []);
 

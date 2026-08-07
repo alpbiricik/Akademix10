@@ -4,6 +4,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getPlatformCompanies } from "@/lib/adapters/platformAdapter";
 
+export const dynamic = "force-dynamic";
+
 export default async function PlatformCompaniesPage() {
   const companies = await getPlatformCompanies();
 

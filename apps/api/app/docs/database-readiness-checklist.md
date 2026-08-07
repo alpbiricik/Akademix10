@@ -1,6 +1,6 @@
 # Database Readiness Checklist
 
-## Phase 2G Complete
+## Phase 2B-B Complete
 
 - Phase 2 database preparation is complete as a draft.
 - Core SaaS tables drafted.
@@ -15,16 +15,18 @@
 - Fine-grained cost logs included.
 - Session audit/event logs included.
 - Reports table included.
-- RLS intent draft exists.
-- Deterministic demo seed exists.
+- Production RLS foundation policies exist for platform/company/learner/anon scopes.
+- Deterministic demo seed is idempotent and does not create Auth users.
 - Backend repository skeleton exists.
+- `public.users.id` maps directly to `auth.users.id`.
+- `company_members` is the canonical tenant membership source.
 
 ## Not Connected Yet
 
 - No real Supabase project is connected.
 - No real credentials are included.
-- No real auth provider mapping exists.
-- Production Supabase connection and final RLS policies are pending.
+- Real auth provider mapping is modeled in the schema but not connected to the app runtime.
+- Production Supabase connection is pending.
 - FastAPI still uses mock data by default.
 - Frontend mock mode remains independent of the database.
 
@@ -32,10 +34,9 @@
 
 - Create the real Supabase project.
 - Add secret-managed env vars.
-- Decide final auth-to-users mapping.
-- Convert RLS draft into tested production policies.
+- Provision demo Auth users through a secure admin path before applying user-bound seed rows.
 - Apply migrations in a controlled environment.
-- Validate seed/reset flow.
+- Validate idempotent seed flow.
 - Add backup and retention policy.
 - Harden audit/event log access.
 - Define data retention for transcripts and reports.

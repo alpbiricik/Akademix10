@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getLearnerTrainings } from "@/lib/adapters/learnerAdapter";
 
+export const dynamic = "force-dynamic";
+
 export default async function LearnerTrainingsPage() {
   const assignedTrainings = await getLearnerTrainings();
 

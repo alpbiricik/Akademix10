@@ -3,6 +3,8 @@ import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getUsageSummary } from "@/lib/adapters/usageAdapter";
 
+export const dynamic = "force-dynamic";
+
 export default async function PlatformUsagePage() {
   const summary = await getUsageSummary("platform");
   const usage = [

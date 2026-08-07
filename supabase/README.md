@@ -1,41 +1,49 @@
-# AkademX10 XAI Supabase Schema Draft
+# AkademX10 XAI Supabase Security Foundation
 
-This folder prepares the Phase 2 database model for a future Supabase/Postgres integration.
+This folder contains the Phase 2B Supabase/Postgres development schema, RLS, demo seed, and evaluation-finalization migrations. It is a development merge-readiness artifact, not a production or compliance sign-off.
 
 ## Files
 
-- `migrations/0001_initial_schema.sql`: Postgres schema for B2B SaaS roles, companies, training content, assignments, enrollments, sessions, answers, feedback, scores, usage, cost logs, event logs, and reports.
-- `migrations/0002_rls_policies.sql`: draft Supabase RLS intent for platform/company/learner access.
-- `migrations/0003_seed_demo_data.sql`: deterministic demo data matching the current mock product flow, including one 21-state customer communication module.
+- `migrations/0001_initial_schema.sql`: Postgres schema for B2B SaaS roles, canonical company membership, training content, assignments, enrollments, sessions, answers, feedback, scores, usage, cost logs, event logs, and reports.
+- `migrations/0002_rls_policies.sql`: Supabase RLS foundation for platform/company/learner access using `auth.uid()` and trusted profile/membership rows.
+- `migrations/0003_seed_demo_data.sql`: idempotent deterministic demo data matching the current mock product flow, including one 21-state customer communication module and a second tenant fixture.
+- `migrations/0004_fix_membership_consistency_trigger.sql`: forward fix for the user/company membership consistency trigger.
+- `migrations/0005_session_evaluation_finalize.sql`: evaluation lifecycle table plus atomic finalize RPC for Contract v2.
+- `migrations/0006_restrict_finalize_rpc_grants.sql`: restricts finalize RPC execution to authenticated users.
+- `migrations/0007_restrict_session_evaluation_table_grants.sql`: removes anon table privileges from the evaluation lifecycle table.
 
 ## Current Status
 
-Production-ready:
+Development-ready:
 
 - Table coverage for the Core MVP domain.
+- Direct `public.users.id` to `auth.users.id` mapping.
+- Canonical tenant membership through `company_members`.
 - Foreign key relationships for company, learner, training, session, report, and usage boundaries.
+- RLS helpers, grants, and concrete policies for platform/company/learner/anon scopes.
 - Cost and audit tables for token/STT/TTS/avatar usage logging.
-- Deterministic seed data for local validation later.
+- Idempotent deterministic seed data for local validation later.
+- Hosted development project is linked and uses the Frankfurt region.
+- Evaluation Contract v2 persists normalized feedback, scoring, skill impact, usage, and report data without storing raw learner answers by default.
 
-Draft/not production-final:
+Not production-final:
 
-- RLS policies are intentionally commented as intent until real Supabase Auth mapping exists.
-- No Supabase credentials are included.
-- No production Supabase project is connected.
+- No Supabase credentials are included in the repository.
+- No production Supabase project should be targeted from this branch.
+- Hosted authenticated smoke tests require dedicated E2E credentials supplied outside the repository.
 - No raw audio/video storage is included by default.
 - AI, LiveAvatar, STT and TTS providers are not connected.
 
-## Future Supabase CLI Reference
+## Supabase CLI Reference
 
-These commands are references for a later phase. Supabase CLI is not required for Phase 2G.
+Use only against local or confirmed hosted development projects. Do not run reset, truncate, drop, or production writes from this branch.
 
 ```powershell
 supabase init
 supabase migration new add_core_mvp_tables
-supabase db reset
 supabase db push
 ```
 
 ## Data Retention Note
 
-Raw audio/video should not be stored by default. Store text/transcripts, normalized feedback, scores, reports, usage summaries, cost logs, and audit events unless the product explicitly adds consent, retention rules, and secure media storage later.
+Raw learner answers, transcripts, audio, and video should not be stored by default. Store normalized feedback, scores, reports, usage summaries, cost logs, and audit events unless the product explicitly adds consent, retention rules, and secure media storage later.

@@ -4,7 +4,9 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LogIn, Menu, PlayCircle, X } from "lucide-react";
 import { getRoleNavigationItems } from "@/components/layout/navigation-items";
+import { DATA_SOURCE_MODE } from "@/lib/api/config";
 import { MOCK_USER_STORAGE_KEY, parseMockUser, roleDestinations, roleLabels, type MockUserSession } from "@/lib/mock-auth";
+import { clearStoredSession, getTrustedProfile } from "@/lib/supabase-auth";
 
 export function Topbar() {
   const [user, setUser] = useState<MockUserSession | null>(null);
@@ -13,9 +15,17 @@ export function Topbar() {
 
   useEffect(() => {
     queueMicrotask(() => {
-      setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
+      if (DATA_SOURCE_MODE === "mock") {
+        setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
+        return;
+      }
+      getTrustedProfile().then(setUser).catch(() => setUser(null));
     });
   }, []);
+
+  function handleLoginClick() {
+    if (DATA_SOURCE_MODE === "api") clearStoredSession();
+  }
 
   const navItems = useMemo(() => getRoleNavigationItems(user), [user]);
 
@@ -85,9 +95,9 @@ export function Topbar() {
               <span className="sm:hidden">{user ? "Home" : "Role"}</span>
             </Link>
           )}
-          <Link href="/login" className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-md bg-[#18c5b5] px-2.5 text-sm font-medium text-[#102b3f] transition hover:bg-[#35d6c6]">
+          <Link href="/login" onClick={handleLoginClick} className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-md bg-[#18c5b5] px-2.5 text-sm font-medium text-[#102b3f] transition hover:bg-[#35d6c6]">
             <LogIn className="h-4 w-4" />
-            <span className="hidden sm:inline">Login</span>
+            <span className="hidden sm:inline">{user && DATA_SOURCE_MODE === "api" ? "Logout" : "Login"}</span>
           </Link>
         </div>
         {menuOpen ? (

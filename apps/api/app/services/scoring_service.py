@@ -120,12 +120,14 @@ def score_answer(
     answer_text: str,
     rubric: RubricDTO,
     provider: ScoringProvider | None = None,
+    enforce_query_limit: bool = True,
 ) -> StructuredScoringResultDTO:
     validate_rubric(rubric)
     guardrail_flags = validate_answer(answer_text)
-    if scoring_repository.get_query_count(session.id, state.id) >= MAX_QUERIES_PER_STATE:
-        raise MaxQueriesPerStateError("Max queries per state exceeded.")
-    scoring_repository.increment_query_count(session.id, state.id)
+    if enforce_query_limit:
+        if scoring_repository.get_query_count(session.id, state.id) >= MAX_QUERIES_PER_STATE:
+            raise MaxQueriesPerStateError("Max queries per state exceeded.")
+        scoring_repository.increment_query_count(session.id, state.id)
 
     active_provider = provider or MockScoringProvider()
     request = ProviderRequestDTO(

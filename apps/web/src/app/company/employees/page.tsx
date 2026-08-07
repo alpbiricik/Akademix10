@@ -4,6 +4,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getCompanyEmployees } from "@/lib/adapters/companyAdapter";
 
+export const dynamic = "force-dynamic";
+
 export default async function CompanyEmployeesPage() {
   const employees = await getCompanyEmployees("company-demo");
 

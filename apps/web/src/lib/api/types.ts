@@ -22,3 +22,10 @@ export interface SessionAnswerPayload {
   stateId: string;
   answerText: string;
 }
+
+export interface SessionFinalizePayload {
+  idempotencyKey: string;
+  contractVersion: "2.0";
+  answers: SessionAnswerPayload[];
+  sessionVersion?: string;
+}
