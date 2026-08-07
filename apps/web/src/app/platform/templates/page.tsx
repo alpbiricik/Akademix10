@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getPlatformTemplates } from "@/lib/adapters/platformAdapter";
 
+export const dynamic = "force-dynamic";
+
 export default async function PlatformTemplatesPage() {
   const templates = await getPlatformTemplates();
 

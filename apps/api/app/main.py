@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import API_VERSION, APP_NAME, FRONTEND_ORIGIN
-from app.routers import company, health, learner, platform, usage
+from app.routers import auth, company, health, learner, platform, usage
 
 app = FastAPI(title=APP_NAME, version=API_VERSION)
 
@@ -15,6 +15,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(auth.router)
 app.include_router(platform.router)
 app.include_router(company.router)
 app.include_router(learner.router)

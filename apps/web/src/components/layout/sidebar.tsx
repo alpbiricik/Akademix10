@@ -4,14 +4,20 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { BarChart3 } from "lucide-react";
 import { getLoginNavigationItem, getRoleNavigationItems } from "@/components/layout/navigation-items";
+import { DATA_SOURCE_MODE } from "@/lib/api/config";
 import { MOCK_USER_STORAGE_KEY, parseMockUser, roleLabels, type MockUserSession } from "@/lib/mock-auth";
+import { getTrustedProfile } from "@/lib/supabase-auth";
 
 export function Sidebar() {
   const [user, setUser] = useState<MockUserSession | null>(null);
 
   useEffect(() => {
     queueMicrotask(() => {
-      setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
+      if (DATA_SOURCE_MODE === "mock") {
+        setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
+        return;
+      }
+      getTrustedProfile().then(setUser).catch(() => setUser(null));
     });
   }, []);
 

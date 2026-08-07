@@ -18,7 +18,8 @@ import {
 import { formatUsd, getStateTypeLabel, getStateTypeTone, isInteractiveState, sortStatesByOrder } from "@/lib/state-machine/utils";
 import { getLearnerTrainings } from "@/lib/adapters/learnerAdapter";
 import { getPlatformTemplates } from "@/lib/adapters/platformAdapter";
-import { completeCurrentState, getSession, getSessionStates, moveToNextState, moveToPreviousState, resetDemoSession, submitSessionAnswer } from "@/lib/adapters/sessionAdapter";
+import { completeCurrentState, finalizeSession, getSession, getSessionStates, moveToNextState, moveToPreviousState, resetDemoSession, submitSessionAnswer } from "@/lib/adapters/sessionAdapter";
+import { DATA_SOURCE_MODE } from "@/lib/api/config";
 import { ApiError } from "@/lib/api/errors";
 import type { MockAIFeedback, TrainingModule, TrainingSession, TrainingState, TrainingTemplate } from "@/lib/state-machine/types";
 
@@ -28,9 +29,11 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
   const [trainings, setTrainings] = useState<TrainingModule[]>([]);
   const [templates, setTemplates] = useState<TrainingTemplate[]>([]);
   const [draft, setDraft] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitInFlightRef = useRef(false);
+  const finalizeInFlightRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -43,6 +46,9 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
       setStates(loadedStates as TrainingState[]);
       setTrainings(loadedTrainings.filter((item): item is TrainingModule => "stateIds" in item));
       setTemplates(loadedTemplates as TrainingTemplate[]);
+      if (DATA_SOURCE_MODE === "api") {
+        setDrafts(readSessionDrafts(loaded.id));
+      }
     }
     load();
     return () => {
@@ -61,10 +67,10 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     if (!session || !currentStateId) return;
     queueMicrotask(() => {
-      setDraft(session.answers.find((item) => item.stateId === currentStateId)?.answerText ?? "");
+      setDraft(DATA_SOURCE_MODE === "api" ? drafts[currentStateId] ?? "" : session.answers.find((item) => item.stateId === currentStateId)?.answerText ?? "");
       setSubmitError(null);
     });
-  }, [currentStateId, session]);
+  }, [currentStateId, drafts, session]);
 
   function applySession(next: TrainingSession) {
     const withUsage = { ...next, usage: calculateMockUsage(next, sortedStates) };
@@ -77,6 +83,14 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     setIsSubmitting(true);
     setSubmitError(null);
     try {
+      if (DATA_SOURCE_MODE === "api") {
+        const nextDrafts = { ...drafts, [currentState.id]: draft.trim() };
+        setDrafts(nextDrafts);
+        writeSessionDrafts(session.id, nextDrafts);
+        const updated = await completeCurrentState(session.id);
+        if (isTrainingSession(updated)) applySession(updated);
+        return;
+      }
       const updated = await submitSessionAnswer(session.id, { stateId: currentState.id, answerText: draft.trim() });
       if (isTrainingSession(updated)) applySession(updated);
     } catch (error) {
@@ -113,7 +127,36 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     setStates(resetStates as TrainingState[]);
     setSession({ ...reset, usage: calculateMockUsage(reset, resetStates as TrainingState[]) });
     setDraft("");
+    setDrafts({});
+    clearSessionDrafts(reset.id);
     setSubmitError(null);
+  }
+
+  async function handleFinalize() {
+    if (!session || finalizeInFlightRef.current) return;
+    finalizeInFlightRef.current = true;
+    setIsSubmitting(true);
+    setSubmitError(null);
+    try {
+      const answers = sortedStates
+        .filter((state) => isInteractiveState(state))
+        .map((state) => ({ stateId: state.id, answerText: drafts[state.id]?.trim() ?? "" }))
+        .filter((answer) => answer.answerText);
+      const updated = await finalizeSession(session.id, {
+        idempotencyKey: getFinalizeKey(session.id),
+        contractVersion: "2.0",
+        answers,
+        sessionVersion: session.updatedAt,
+      });
+      if (isTrainingSession(updated)) applySession(updated);
+      clearSessionDrafts(session.id);
+      setDrafts({});
+    } catch (error) {
+      setSubmitError(getSubmitErrorMessage(error));
+    } finally {
+      finalizeInFlightRef.current = false;
+      setIsSubmitting(false);
+    }
   }
 
   if (!session || !currentState) {
@@ -171,6 +214,7 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
                   feedback={currentFeedback}
                   error={submitError}
                   isSubmitting={isSubmitting}
+                  isBatchMode={DATA_SOURCE_MODE === "api"}
                   canMoveNext={canMoveNext(session, sortedStates)}
                   onChange={(value) => {
                     setDraft(value);
@@ -184,6 +228,12 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
                 <Button variant="outline" onClick={handleMovePrevious} disabled={!canMovePrevious(session, sortedStates)}><ArrowLeft className="h-4 w-4" />Previous State</Button>
                 <Button variant="secondary" onClick={handleComplete} disabled={session.completedStateIds.includes(currentState.id)}><CheckCircle2 className="h-4 w-4" />Complete State</Button>
                 <Button onClick={handleMoveNext} disabled={!canMoveNext(session, sortedStates)}>Next State<ArrowRight className="h-4 w-4" /></Button>
+                {DATA_SOURCE_MODE === "api" && currentState.type === "final" ? (
+                  <Button type="button" onClick={handleFinalize} disabled={isSubmitting}>
+                    <Sparkles className="h-4 w-4" />
+                    {isSubmitting ? "Finalizing..." : "Finalize"}
+                  </Button>
+                ) : null}
               </div>
             </CardContent>
           </Card>
@@ -197,6 +247,36 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
       </div>
     </div>
   );
+}
+
+function draftStorageKey(sessionId: string) {
+  return `akademx10.sessionDraft.${sessionId}`;
+}
+
+function readSessionDrafts(sessionId: string): Record<string, string> {
+  try {
+    const raw = window.sessionStorage.getItem(draftStorageKey(sessionId));
+    return raw ? JSON.parse(raw) as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSessionDrafts(sessionId: string, drafts: Record<string, string>) {
+  window.sessionStorage.setItem(draftStorageKey(sessionId), JSON.stringify(drafts));
+}
+
+function clearSessionDrafts(sessionId: string) {
+  window.sessionStorage.removeItem(draftStorageKey(sessionId));
+}
+
+function getFinalizeKey(sessionId: string) {
+  const key = `akademx10.finalizeKey.${sessionId}`;
+  const existing = window.sessionStorage.getItem(key);
+  if (existing) return existing;
+  const next = `${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  window.sessionStorage.setItem(key, next);
+  return next;
 }
 
 function DynamicStateContent({ state }: { state: TrainingState }) {
@@ -230,6 +310,7 @@ function InteractionBox({
   feedback,
   error,
   isSubmitting,
+  isBatchMode,
   canMoveNext,
   onChange,
   onSubmit,
@@ -240,6 +321,7 @@ function InteractionBox({
   feedback?: MockAIFeedback;
   error: string | null;
   isSubmitting: boolean;
+  isBatchMode: boolean;
   canMoveNext: boolean;
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -263,7 +345,7 @@ function InteractionBox({
       <div className="mt-3 flex justify-end">
         <Button type="button" onClick={onSubmit} disabled={!value.trim() || isSubmitting}>
           <Sparkles className="h-4 w-4" />
-          {isSubmitting ? "Submitting..." : "Submit for AI Feedback"}
+          {isSubmitting ? "Saving..." : isBatchMode ? "Save answer" : "Submit for AI Feedback"}
         </Button>
       </div>
       {feedback ? <FeedbackCard feedback={feedback} /> : null}

@@ -6,7 +6,9 @@ import { LogIn } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MOCK_USER_STORAGE_KEY, type MockRole } from "@/lib/mock-auth";
+import { DATA_SOURCE_MODE } from "@/lib/api/config";
+import { MOCK_USER_STORAGE_KEY, roleDestinations, type MockRole } from "@/lib/mock-auth";
+import { signInWithPassword } from "@/lib/supabase-auth";
 
 const roleOptions: Array<{
   role: MockRole;
@@ -45,6 +47,23 @@ export function MockLoginForm() {
   const router = useRouter();
   const [role, setRole] = useState<MockRole>("learner");
   const [name, setName] = useState("Alp");
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSupabaseLogin() {
+    setError(null);
+    setSubmitting(true);
+    try {
+      const profile = await signInWithPassword(identifier.trim(), password);
+      router.push(roleDestinations[profile.role]);
+    } catch {
+      setError("Login failed. Check your credentials and try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   function handleContinue() {
     const selectedRole = roleOptions.find((option) => option.role === role) ?? roleOptions[0];
@@ -61,6 +80,38 @@ export function MockLoginForm() {
     );
 
     router.push(selectedRole.destination);
+  }
+
+  if (DATA_SOURCE_MODE === "api") {
+    return (
+      <div className="space-y-5">
+        <div className="space-y-2">
+          <Label htmlFor="login-identifier">Email</Label>
+          <Input
+            id="login-identifier"
+            type="email"
+            value={identifier}
+            onChange={(event) => setIdentifier(event.target.value)}
+            autoComplete="email"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="login-password">Password</Label>
+          <Input
+            id="login-password"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            autoComplete="current-password"
+          />
+        </div>
+        {error ? <p className="text-sm font-medium text-red-700">{error}</p> : null}
+        <Button type="button" className="w-full bg-slate-950 text-white hover:bg-slate-800" onClick={handleSupabaseLogin} disabled={submitting || !identifier.trim() || !password}>
+          <LogIn className="h-4 w-4" />
+          {submitting ? "Signing in..." : "Sign in"}
+        </Button>
+      </div>
+    );
   }
 
   return (

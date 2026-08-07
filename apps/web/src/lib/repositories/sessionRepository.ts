@@ -12,6 +12,10 @@ function cloneSession(session: TrainingSession): TrainingSession {
   return JSON.parse(JSON.stringify(session)) as TrainingSession;
 }
 
+function sessionSnapshotForBrowserStorage(session: TrainingSession): TrainingSession {
+  return { ...session, answers: [] };
+}
+
 export function getSessionById(sessionId: string) {
   return loadSessionFromStorage(sessionId) ?? trainingSessions.find((session) => session.id === sessionId) ?? null;
 }
@@ -28,7 +32,7 @@ export function createOrResetDemoSession() {
 }
 
 export function saveSessionToStorage(session: TrainingSession) {
-  if (canUseStorage()) window.localStorage.setItem(`${SESSION_STORAGE_PREFIX}${session.id}`, JSON.stringify(session));
+  if (canUseStorage()) window.localStorage.setItem(`${SESSION_STORAGE_PREFIX}${session.id}`, JSON.stringify(sessionSnapshotForBrowserStorage(session)));
   return session;
 }
 

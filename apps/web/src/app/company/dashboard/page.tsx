@@ -13,6 +13,8 @@ const links = [
   { title: "Usage & Cost", href: "/company/usage" },
 ];
 
+export const dynamic = "force-dynamic";
+
 export default async function CompanyDashboardPage() {
   const summary = await getCompanyDashboardSummary("company-demo");
 

@@ -9,6 +9,8 @@ import { getLearnerDashboardSummary, getLearnerStructuredReport, getLearnerTrain
 import { getSession } from "@/lib/adapters/sessionAdapter";
 import type { TrainingSession } from "@/lib/state-machine/types";
 
+export const dynamic = "force-dynamic";
+
 export default async function LearnerDashboardPage() {
   const [summary, assignedTrainings, report, session] = await Promise.all([
     getLearnerDashboardSummary(),

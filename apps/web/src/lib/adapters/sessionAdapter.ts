@@ -1,6 +1,6 @@
 import { apiGet, apiPatch, apiPost } from "@/lib/api/client";
 import { DATA_SOURCE_MODE } from "@/lib/api/config";
-import type { SessionAnswerPayload, SessionStateUpdatePayload } from "@/lib/api/types";
+import type { SessionAnswerPayload, SessionFinalizePayload, SessionStateUpdatePayload } from "@/lib/api/types";
 import type { StructuredScoringResultDTO, TrainingStateDTO } from "@/lib/contracts/dtos";
 import { applyMockSkillImpact, completeCurrentState as completeSessionCurrentState, generateMockFeedback, getCurrentState, moveToNextState as moveSessionToNextState, moveToPreviousState as moveSessionToPreviousState, submitAnswer } from "@/lib/state-machine/engine";
 import { createOrResetDemoSession, getSessionById, getStatesForSession, updateStoredSession } from "@/lib/repositories/sessionRepository";
@@ -98,6 +98,13 @@ export function submitSessionAnswerWithScoring(sessionId: string, payload: Sessi
 
 export function submitSessionAnswer(sessionId: string, payload: SessionAnswerPayload) {
   return submitSessionAnswerWithScoring(sessionId, payload).then((response) => response?.session ?? null);
+}
+
+export function finalizeSession(sessionId: string, payload: SessionFinalizePayload) {
+  if (DATA_SOURCE_MODE === "mock") {
+    return Promise.all(payload.answers.map((answer) => submitSessionAnswerWithScoring(sessionId, answer))).then((responses) => responses.at(-1)?.session ?? getSessionById(sessionId));
+  }
+  return apiPost<{ session: TrainingSession }>(`/api/learner/sessions/${sessionId}/finalize`, payload, { mockRole: "learner" }).then((response) => response.session);
 }
 
 export function completeCurrentState(sessionId: string) {
