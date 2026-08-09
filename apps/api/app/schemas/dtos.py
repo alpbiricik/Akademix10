@@ -1,12 +1,28 @@
+from __future__ import annotations
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 Role = Literal["platform", "company", "learner"]
-TrainingStateType = Literal["intro", "video", "avatar", "question", "roleplay", "reflection", "feedback", "final"]
+TrainingStateType = Literal["intro", "video", "avatar", "live_avatar", "question", "roleplay", "reflection", "feedback", "final"]
 TrainingSessionStatus = Literal["not_started", "in_progress", "completed"]
 ScoringRecommendation = Literal["continue", "retry_state", "review_feedback", "complete_state"]
 ReportType = Literal["learner_session", "company_aggregate", "platform_aggregate"]
+ConversationAction = Literal["continue", "complete"]
+ConversationGuardrailDecision = Literal["allow", "redirect", "block"]
+ConversationGuardrailReason = Literal[
+    "in_scope",
+    "off_topic",
+    "prompt_injection",
+    "instruction_extraction",
+    "rubric_extraction",
+    "state_violation",
+    "unsafe_content",
+    "malformed_output",
+    "excessive_output_length",
+    "persona_escape",
+]
 
 
 class AvatarPolicyDTO(BaseModel):
@@ -59,6 +75,18 @@ class TrainingModuleDTO(BaseModel):
     status: Literal["draft", "active", "archived"]
 
 
+class ConversationConfigDTO(BaseModel):
+    minTurns: int = 1
+    maxTurns: int = 3
+    persona: str
+    scenario: str
+    objective: str
+    conversationInstructions: str = ""
+    allowedTopics: list[str] = Field(default_factory=list)
+    completionGuidance: str = ""
+    allowCoaching: bool = False
+
+
 class TrainingStateDTO(BaseModel):
     id: str
     moduleId: str
@@ -72,6 +100,7 @@ class TrainingStateDTO(BaseModel):
     rubric: str
     skillTags: list[str]
     completionRule: Literal["viewed", "answered", "manual"]
+    conversationConfig: ConversationConfigDTO | None = None
 
 
 class SessionAnswerDTO(BaseModel):
@@ -148,6 +177,61 @@ class ProviderMetadataDTO(BaseModel):
     attemptCount: int = 1
     fallbackUsed: bool = False
     latencyMs: int | None = None
+    inputTokens: int | None = None
+    outputTokens: int | None = None
+
+
+class ConversationTurnDTO(BaseModel):
+    turnNumber: int
+    learnerText: str
+    assistantText: str
+
+
+class ConversationRequestDTO(BaseModel):
+    schemaVersion: str = "1.0"
+    sessionId: str
+    stateId: str
+    turnNumber: int
+    persona: str
+    scenario: str
+    objective: str
+    conversationInstructions: str = ""
+    allowedTopics: list[str] = Field(default_factory=list)
+    completionGuidance: str = ""
+    sanitizedLearnerTurn: str
+    temporaryContext: list[ConversationTurnDTO] = Field(default_factory=list)
+    minTurns: int = 1
+    maxTurns: int = 3
+
+
+class ConversationResultDTO(BaseModel):
+    assistantText: str
+    action: ConversationAction
+    reasonCode: str | None = None
+    providerMetadata: ProviderMetadataDTO
+
+
+class ConversationGuardrailResultDTO(BaseModel):
+    decision: ConversationGuardrailDecision
+    reasonCode: ConversationGuardrailReason
+    safeText: str
+    message: str | None = None
+
+
+class ConversationTurnRequestDTO(BaseModel):
+    stateId: str
+    learnerText: str
+
+
+class ConversationTurnResponseDTO(BaseModel):
+    session: TrainingSessionDTO | None = None
+    stateId: str
+    turnNumber: int
+    assistantText: str
+    action: ConversationAction
+    conversationComplete: bool
+    guardrail: ConversationGuardrailResultDTO
+    providerMetadata: ProviderMetadataDTO
 
 
 class TokenCostMetadataDTO(BaseModel):

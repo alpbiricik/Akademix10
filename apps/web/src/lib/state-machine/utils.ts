@@ -26,6 +26,7 @@ export function getStateTypeLabel(type: TrainingStateType) {
     intro: "Intro",
     video: "Video",
     avatar: "Avatar",
+    live_avatar: "Live Avatar",
     question: "Question",
     roleplay: "Roleplay",
     reflection: "Reflection",
@@ -40,6 +41,7 @@ export function getStateTypeTone(type: TrainingStateType) {
     intro: "bg-slate-100 text-slate-800",
     video: "bg-sky-50 text-sky-800",
     avatar: "bg-teal-50 text-teal-800",
+    live_avatar: "bg-teal-50 text-teal-800",
     question: "bg-indigo-50 text-indigo-800",
     roleplay: "bg-amber-50 text-amber-900",
     reflection: "bg-violet-50 text-violet-800",
@@ -54,7 +56,7 @@ export function isInteractiveState(state: TrainingState) {
 }
 
 export function isAvatarState(state: TrainingState) {
-  return state.avatarEnabled || state.type === "avatar";
+  return state.avatarEnabled || state.type === "avatar" || state.type === "live_avatar";
 }
 
 export function clampScore(score: number) {

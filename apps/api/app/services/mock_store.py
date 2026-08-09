@@ -3,6 +3,7 @@ from copy import deepcopy
 from app.schemas.dtos import (
     AvatarPolicyDTO,
     CompanyDTO,
+    ConversationConfigDTO,
     EnrollmentDTO,
     ReportDTO,
     SkillScoreDTO,
@@ -67,6 +68,29 @@ state_sequence = [
     ("final", "Final summary", "Session complete. Open your report for next actions.", "Completion and report handoff.", ["Communication"], True, 105, "viewed"),
 ]
 
+conversation_configs = {
+    "avatar": ConversationConfigDTO(
+        minTurns=1,
+        maxTurns=2,
+        persona="Avatar coach",
+        scenario="A short coaching checkpoint inside the current customer communication training.",
+        objective="Learner practices concise, calm workplace communication.",
+        conversationInstructions="Stay as the avatar coach. Ask one brief follow-up if the learner needs another turn.",
+        allowedTopics=["communication", "empathy", "confidence", "customer", "conversation", "objection"],
+        completionGuidance="Complete after the learner gives one relevant response or when maxTurns is reached.",
+    ),
+    "roleplay": ConversationConfigDTO(
+        minTurns=2,
+        maxTurns=3,
+        persona="Skeptical renewal customer",
+        scenario="The customer is unsure whether renewing the platform is worth the cost.",
+        objective="Learner practices empathy, objection handling, value framing, and next-step closing.",
+        conversationInstructions="Stay as the customer. React naturally to the learner and ask at most one relevant follow-up.",
+        allowedTopics=["communication", "empathy", "objection", "customer", "renewal", "value", "price", "closing", "meeting", "plan"],
+        completionGuidance="Complete when the learner has acknowledged concern and offered a useful next step, or at maxTurns.",
+    ),
+}
+
 training_states = [
     TrainingStateDTO(
         id=f"communication-sales-state-{index + 1:02}",
@@ -81,6 +105,7 @@ training_states = [
         rubric=rubric,
         skillTags=skill_tags,
         completionRule=completion_rule,
+        conversationConfig=conversation_configs.get(state_type) if avatar_enabled or state_type in {"avatar", "roleplay"} else None,
     )
     for index, (state_type, title, prompt, rubric, skill_tags, avatar_enabled, avatar_budget_sec, completion_rule) in enumerate(state_sequence)
 ]

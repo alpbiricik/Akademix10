@@ -75,6 +75,17 @@ export interface TrainingStateDTO {
   rubric: string;
   skillTags: string[];
   completionRule: "viewed" | "answered" | "manual";
+  conversationConfig?: {
+    minTurns: number;
+    maxTurns: number;
+    persona: string;
+    scenario: string;
+    objective: string;
+    conversationInstructions: string;
+    allowedTopics: string[];
+    completionGuidance: string;
+    allowCoaching: boolean;
+  } | null;
   createdAt: ISODateTimeString;
   updatedAt: ISODateTimeString;
 }
@@ -146,6 +157,8 @@ export interface ProviderMetadataDTO {
   attemptCount: number;
   fallbackUsed: boolean;
   latencyMs: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
 }
 
 export interface TokenCostMetadataDTO {

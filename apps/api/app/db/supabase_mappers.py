@@ -3,6 +3,7 @@ from typing import Any
 from app.schemas.dtos import (
     AvatarPolicyDTO,
     CompanyDTO,
+    ConversationConfigDTO,
     EnrollmentDTO,
     ReportDTO,
     SessionFeedbackDTO,
@@ -87,6 +88,7 @@ def state_from_row(row: dict[str, Any]) -> TrainingStateDTO:
         rubric_text = rubric.get("text") or ""
     else:
         rubric_text = str(rubric or "")
+    conversation_config = row.get("conversation_config")
     return TrainingStateDTO(
         id=row["id"],
         moduleId=row["module_id"],
@@ -100,6 +102,7 @@ def state_from_row(row: dict[str, Any]) -> TrainingStateDTO:
         rubric=rubric_text,
         skillTags=row.get("skill_tags") or [],
         completionRule=_completion_rule(row.get("completion_rule")),
+        conversationConfig=ConversationConfigDTO.model_validate(conversation_config) if isinstance(conversation_config, dict) else None,
     )
 
 

@@ -6,6 +6,8 @@ from app.db.database import DatabaseMode, get_database_mode
 from app.db.supabase_mappers import enrollment_from_row, session_from_row, state_from_row, usage_from_row
 from app.db.supabase_rest import SupabaseRequestError, SupabaseUserClient
 from app.schemas.dtos import (
+    ConversationTurnRequestDTO,
+    ConversationTurnResponseDTO,
     DimensionScoreDTO,
     EnrollmentDTO,
     GuardrailFlagDTO,
@@ -18,6 +20,8 @@ from app.schemas.dtos import (
     TrainingSessionDTO,
 )
 from app.services import mock_store
+from app.services import conversation_service
+from app.services.conversation_errors import ConversationError, ConversationProviderConfigurationError, ConversationStateError
 from app.services.finalization_service import (
     FinalizationConflictError,
     FinalizationError,
@@ -65,6 +69,13 @@ def _load_session(client: SupabaseUserClient, session_id: str) -> TrainingSessio
         raise HTTPException(status_code=404, detail="Session not found.")
     usage_rows = client.select("session_usage", f"select=*&session_id=eq.{session_id}&limit=1")
     return session_from_row(rows[0], usage_from_row(usage_rows[0] if usage_rows else None))
+
+
+def _authorize_mock_session(session: TrainingSessionDTO, principal: Principal) -> None:
+    if session.userId != principal.user_id:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    if principal.company_id and session.companyId != principal.company_id:
+        raise HTTPException(status_code=403, detail="Session is outside the learner company boundary.")
 
 
 def _scoring_results_from_supabase(client: SupabaseUserClient, session_id: str) -> list[StructuredScoringResultDTO]:
@@ -189,6 +200,7 @@ def get_session(session_id: str, principal: Principal = Depends(require_role("le
     session = mock_store.sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
+    _authorize_mock_session(session, principal)
     return {"session": session.model_dump(), "states": [state.model_dump() for state in mock_store.training_states]}
 
 
@@ -214,6 +226,7 @@ def patch_session_state(session_id: str, body: StatePatchRequest, principal: Pri
     session = mock_store.sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
+    _authorize_mock_session(session, principal)
     if body.action == "next":
         next_state = session_engine.get_next_state(session, mock_store.training_states)
         if next_state:
@@ -226,6 +239,70 @@ def patch_session_state(session_id: str, body: StatePatchRequest, principal: Pri
         session = session_engine.complete_current_state(session, mock_store.training_states)
     mock_store.sessions[session_id] = session
     return session
+
+
+@router.post("/sessions/{session_id}/conversation-turn", response_model=ConversationTurnResponseDTO)
+def post_conversation_turn(session_id: str, body: ConversationTurnRequestDTO, principal: Principal = Depends(require_role("learner"))) -> ConversationTurnResponseDTO:
+    if get_database_mode() == DatabaseMode.SUPABASE:
+        client = _client(principal)
+        session = _load_session(client, session_id)
+        rows = client.select("training_states", f"select=*&module_id=eq.{session.moduleId}&order=order_index.asc")
+        states = [state_from_row(row) for row in rows]
+        state = next((item for item in states if item.id == body.stateId), None)
+        if not state:
+            raise HTTPException(status_code=404, detail="State not found.")
+        try:
+            result, turn_number, complete, guardrail = conversation_service.continue_training_conversation(session, state, body.learnerText)
+        except ConversationProviderConfigurationError as error:
+            raise HTTPException(status_code=503, detail={"code": error.code, "message": "Conversation provider is not configured."}) from error
+        except ConversationStateError as error:
+            raise HTTPException(status_code=409, detail={"code": error.code, "message": str(error)}) from error
+        except ConversationError as error:
+            raise HTTPException(status_code=502, detail={"code": error.code, "message": str(error)}) from error
+        if complete:
+            completed = set(session.completedStateIds)
+            completed.add(state.id)
+            client.patch("training_sessions", f"id=eq.{session_id}", {"completed_state_ids": list(completed)})
+            session = _load_session(client, session_id)
+        return ConversationTurnResponseDTO(
+            session=session,
+            stateId=state.id,
+            turnNumber=turn_number,
+            assistantText=result.assistantText,
+            action=result.action,
+            conversationComplete=complete,
+            guardrail=guardrail,
+            providerMetadata=result.providerMetadata,
+        )
+
+    session = mock_store.sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    _authorize_mock_session(session, principal)
+    state = next((item for item in mock_store.training_states if item.id == body.stateId), None)
+    if not state:
+        raise HTTPException(status_code=404, detail="State not found.")
+    try:
+        result, turn_number, complete, guardrail = conversation_service.continue_training_conversation(session, state, body.learnerText)
+    except ConversationProviderConfigurationError as error:
+        raise HTTPException(status_code=503, detail={"code": error.code, "message": "Conversation provider is not configured."}) from error
+    except ConversationStateError as error:
+        raise HTTPException(status_code=409, detail={"code": error.code, "message": str(error)}) from error
+    except ConversationError as error:
+        raise HTTPException(status_code=502, detail={"code": error.code, "message": str(error)}) from error
+    if complete and state.id not in session.completedStateIds:
+        session.completedStateIds.append(state.id)
+    mock_store.sessions[session_id] = session
+    return ConversationTurnResponseDTO(
+        session=session,
+        stateId=state.id,
+        turnNumber=turn_number,
+        assistantText=result.assistantText,
+        action=result.action,
+        conversationComplete=complete,
+        guardrail=guardrail,
+        providerMetadata=result.providerMetadata,
+    )
 
 
 @router.post("/sessions/{session_id}/answers")
@@ -260,6 +337,7 @@ def post_answer(session_id: str, body: AnswerRequest, principal: Principal = Dep
     session = mock_store.sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
+    _authorize_mock_session(session, principal)
     state = next((item for item in mock_store.training_states if item.id == body.stateId), None)
     if not state:
         raise HTTPException(status_code=404, detail="State not found.")

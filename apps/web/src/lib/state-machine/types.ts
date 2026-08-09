@@ -58,6 +58,7 @@ export type TrainingStateType =
   | "intro"
   | "video"
   | "avatar"
+  | "live_avatar"
   | "question"
   | "roleplay"
   | "reflection"
@@ -77,6 +78,17 @@ export interface TrainingState {
   rubric: string;
   skillTags: string[];
   completionRule: "viewed" | "answered" | "manual";
+  conversationConfig?: {
+    minTurns: number;
+    maxTurns: number;
+    persona: string;
+    scenario: string;
+    objective: string;
+    conversationInstructions: string;
+    allowedTopics: string[];
+    completionGuidance: string;
+    allowCoaching: boolean;
+  } | null;
 }
 
 export type TrainingSessionStatus = "not_started" | "in_progress" | "completed";
