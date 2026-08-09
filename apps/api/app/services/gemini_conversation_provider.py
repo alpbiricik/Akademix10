@@ -12,11 +12,12 @@ from app.services.conversation_provider import CONVERSATION_PROVIDER_TIMEOUT_SEC
 class GeminiConversationProvider:
     provider_name = "gemini"
 
-    def __init__(self, api_key: str, model: str = "gemini-3.6-flash") -> None:
+    def __init__(self, api_key: str, model: str = "gemini-3.6-flash", thinking_level: str | None = None) -> None:
         if not api_key:
             raise ConversationProviderConfigurationError("Gemini conversation provider requires a server-side API key.")
         self._api_key = api_key
         self.model = model
+        self.thinking_level = thinking_level or ("minimal" if model.endswith("flash-lite") else "medium")
 
     def continue_conversation(self, request: ConversationRequestDTO) -> ConversationResultDTO:
         started = time.perf_counter()
@@ -64,7 +65,7 @@ class GeminiConversationProvider:
             },
             "contents": [{"role": "user", "parts": [{"text": self._prompt(request)}]}],
             "generationConfig": {
-                "thinkingConfig": {"thinkingLevel": "medium"},
+                "thinkingConfig": {"thinkingLevel": self.thinking_level},
                 "responseMimeType": "application/json",
                 "responseSchema": {
                     "type": "object",

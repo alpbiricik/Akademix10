@@ -1,4 +1,4 @@
-from app.core.config import CONVERSATION_CONTEXT_TTL_SECONDS, CONVERSATION_PROVIDER, GEMINI_API_KEY, GEMINI_CONVERSATION_MODEL
+from app.core.config import CONVERSATION_CONTEXT_TTL_SECONDS, CONVERSATION_PROVIDER, GEMINI_API_KEY, GEMINI_CONVERSATION_MODEL, GEMINI_CONVERSATION_THINKING_LEVEL
 from app.schemas.dtos import (
     ConversationConfigDTO,
     ConversationRequestDTO,
@@ -17,7 +17,7 @@ from app.services.mock_conversation_provider import MockConversationProvider
 
 def get_conversation_provider() -> ConversationProvider:
     if CONVERSATION_PROVIDER == "gemini":
-        return GeminiConversationProvider(api_key=GEMINI_API_KEY, model=GEMINI_CONVERSATION_MODEL)
+        return GeminiConversationProvider(api_key=GEMINI_API_KEY, model=GEMINI_CONVERSATION_MODEL, thinking_level=GEMINI_CONVERSATION_THINKING_LEVEL)
     return MockConversationProvider()
 
 

@@ -43,6 +43,13 @@ _UNSAFE_PATTERNS = [
     r"\bexplosive\b",
 ]
 
+_OFF_TOPIC_PATTERNS = [
+    r"\b(write|generate|debug)\b.*\b(code|python|javascript|sql)\b",
+    r"\b(recipe|weather|sports?|movie|song|lyrics?)\b",
+    r"\btranslate\b.*\b(this|text|paragraph)\b",
+    r"\b(make|tell)\b.*\b(joke|poem)\b",
+]
+
 
 def _matches(patterns: list[str], text: str) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
@@ -50,6 +57,10 @@ def _matches(patterns: list[str], text: str) -> bool:
 
 def _topic_text(config: ConversationConfigDTO) -> str:
     return " ".join([config.scenario, config.objective, config.persona, *config.allowedTopics]).lower()
+
+
+def _word_tokens(text: str) -> set[str]:
+    return {word.lower() for word in re.findall(r"[^\W\d_]{4,}", text, flags=re.UNICODE)}
 
 
 def evaluate_input_guardrail(learner_text: str, config: ConversationConfigDTO) -> ConversationGuardrailResultDTO:
@@ -64,10 +75,12 @@ def evaluate_input_guardrail(learner_text: str, config: ConversationConfigDTO) -
         return ConversationGuardrailResultDTO(decision="block", reasonCode="rubric_extraction", safeText="", message=FALLBACK_TEXT)
     if _matches(_PROMPT_INJECTION_PATTERNS, normalized):
         return ConversationGuardrailResultDTO(decision="block", reasonCode="prompt_injection", safeText="", message=FALLBACK_TEXT)
+    if _matches(_OFF_TOPIC_PATTERNS, normalized):
+        return ConversationGuardrailResultDTO(decision="redirect", reasonCode="off_topic", safeText="", message=FALLBACK_TEXT)
 
-    topic_words = {word for word in re.findall(r"[a-zA-Z]{4,}", _topic_text(config))}
-    learner_words = {word.lower() for word in re.findall(r"[a-zA-Z]{4,}", normalized)}
-    if topic_words and learner_words and topic_words.isdisjoint(learner_words):
+    topic_words = _word_tokens(_topic_text(config))
+    learner_words = _word_tokens(normalized)
+    if topic_words and learner_words and topic_words.isdisjoint(learner_words) and normalized.endswith("?"):
         return ConversationGuardrailResultDTO(decision="redirect", reasonCode="off_topic", safeText="", message=FALLBACK_TEXT)
 
     return ConversationGuardrailResultDTO(decision="allow", reasonCode="in_scope", safeText=normalized)
