@@ -53,6 +53,57 @@ class AlwaysLeakyProvider:
         )
 
 
+class CapturingTurkishProvider:
+    provider_name = "capturing-turkish"
+
+    def __init__(self):
+        self.requests = []
+
+    def continue_conversation(self, request):
+        self.requests.append(request)
+        if request.turnNumber == 0:
+            text = "Merhaba Alp. Musteri daha ucuz rakibi soruyor; ilk yanitini nasil kurardin?"
+            action = "continue"
+        elif request.turnNumber >= request.maxTurns:
+            text = "Anladim. Net bir sonraki adim sundun; bu gorusmeyi kapatabiliriz."
+            action = "complete"
+        else:
+            text = "Musterinin fiyat kaygisina deger tarafindan nasil yanit verirsin?"
+            action = "continue"
+        return ConversationResultDTO(
+            assistantText=text,
+            action=action,
+            providerMetadata=ProviderMetadataDTO(provider=self.provider_name, model="test-tr"),
+        )
+
+
+class EnglishThenTurkishProvider:
+    provider_name = "english-then-turkish"
+
+    def __init__(self):
+        self.calls = 0
+
+    def continue_conversation(self, request):
+        self.calls += 1
+        if self.calls == 1:
+            return ConversationResultDTO(
+                assistantText="Tell me how you would answer the customer.",
+                action="continue",
+                providerMetadata=ProviderMetadataDTO(provider=self.provider_name, model="test-en"),
+            )
+        return ConversationResultDTO(
+            assistantText="Musteriye sakin ve deger odakli nasil yanit verirsin?",
+            action="continue",
+            providerMetadata=ProviderMetadataDTO(provider=self.provider_name, model="test-tr"),
+        )
+
+
+def assert_turkish_text(testcase: unittest.TestCase, text: str) -> None:
+    lowered = text.lower()
+    testcase.assertTrue(any(word in lowered for word in ["musteri", "nasil", "yanit", "gorusme", "adim", "devam", "deger"]))
+    testcase.assertFalse(any(phrase in lowered for phrase in ["tell me", "how would you", "what would you", "customer:"]))
+
+
 class ConversationServiceTests(unittest.TestCase):
     def setUp(self):
         scoring_repository.reset_mock_scoring_store()
@@ -141,6 +192,72 @@ class ConversationServiceTests(unittest.TestCase):
         )
         self.assertEqual(result.decision, "allow")
         self.assertEqual(result.reasonCode, "in_scope")
+
+    def test_turkish_opening_request_produces_turkish_opening(self):
+        provider = CapturingTurkishProvider()
+        result = conversation_service.start_training_conversation(self.session, self.state, provider=provider, cache=self.cache)
+        self.assertEqual(provider.requests[0].language, "tr")
+        self.assertEqual(provider.requests[0].turnNumber, 0)
+        assert_turkish_text(self, result.assistantText)
+
+    def test_turkish_learner_turn_produces_turkish_followup(self):
+        provider = CapturingTurkishProvider()
+        result, turn_number, complete, _ = conversation_service.continue_training_conversation(
+            self.session,
+            self.state,
+            "Rakibin fiyat avantajini anliyorum; asil onemli olan hizli deger ve destek.",
+            provider=provider,
+            cache=self.cache,
+        )
+        self.assertEqual(turn_number, 1)
+        self.assertFalse(complete)
+        self.assertEqual(provider.requests[0].language, "tr")
+        assert_turkish_text(self, result.assistantText)
+
+    def test_guardrail_redirect_remains_turkish(self):
+        result, _, complete, guardrail = conversation_service.continue_training_conversation(
+            self.session,
+            self.state,
+            "Python kodu yaz.",
+            provider=CapturingTurkishProvider(),
+            cache=self.cache,
+        )
+        self.assertFalse(complete)
+        self.assertEqual(guardrail.decision, "redirect")
+        assert_turkish_text(self, result.assistantText)
+
+    def test_english_provider_output_is_retried_until_turkish(self):
+        provider = EnglishThenTurkishProvider()
+        result, _, complete, _ = conversation_service.continue_training_conversation(
+            self.session,
+            self.state,
+            "Rakip daha ucuz olsa da deger kanitlarini konusurdum.",
+            provider=provider,
+            cache=self.cache,
+        )
+        self.assertFalse(complete)
+        self.assertEqual(provider.calls, 2)
+        self.assertEqual(result.providerMetadata.attemptCount, 2)
+        assert_turkish_text(self, result.assistantText)
+
+    def test_language_remains_turkish_across_multi_turn_conversation(self):
+        provider = CapturingTurkishProvider()
+        conversation_service.start_training_conversation(self.session, self.state, provider=provider, cache=self.cache)
+        conversation_service.continue_training_conversation(
+            self.session,
+            self.state,
+            "Ilk once kaygiyi anlar ve toplam degeri sorarim.",
+            provider=provider,
+            cache=self.cache,
+        )
+        conversation_service.continue_training_conversation(
+            self.session,
+            self.state,
+            "Sonra kisa bir deger gorusmesi ve takip adimi oneririm.",
+            provider=provider,
+            cache=self.cache,
+        )
+        self.assertEqual([request.language for request in provider.requests], ["tr", "tr", "tr"])
 
     def test_output_validation_rejects_invalid_leakage_and_length(self):
         config = conversation_service.get_state_conversation_config(self.state)

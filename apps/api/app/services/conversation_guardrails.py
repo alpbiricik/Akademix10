@@ -22,18 +22,22 @@ _PROMPT_INJECTION_PATTERNS = [
 
 _INSTRUCTION_EXTRACTION_PATTERNS = [
     r"\bsystem prompt\b",
+    r"\bsystem prompt\w*\b",
     r"\bdeveloper instructions?\b",
     r"\bhidden instructions?\b",
     r"\bshow\b.*\b(prompt|instructions?)\b",
     r"\breveal\b.*\b(prompt|instructions?)\b",
+    r"\b(prompt\w*)\b.*\b(goster|göster|acikla|açıkla)\b",
 ]
 
 _RUBRIC_EXTRACTION_PATTERNS = [
     r"\brubric\b",
+    r"\brubri\w*\b",
     r"\banswer key\b",
     r"\b100 points?\b",
     r"\bfull score\b",
     r"\bscoring\b.*\b(criteria|weights?|internals?)\b",
+    r"\b(rubri\w*)\b.*\b(goster|göster|acikla|açıkla)\b",
 ]
 
 _UNSAFE_PATTERNS = [
@@ -45,6 +49,7 @@ _UNSAFE_PATTERNS = [
 
 _OFF_TOPIC_PATTERNS = [
     r"\b(write|generate|debug)\b.*\b(code|python|javascript|sql)\b",
+    r"\b(python|javascript|sql)\b.*\b(kod\w*|yaz|uret|üret)\b",
     r"\b(recipe|weather|sports?|movie|song|lyrics?)\b",
     r"\btranslate\b.*\b(this|text|paragraph)\b",
     r"\b(make|tell)\b.*\b(joke|poem)\b",
@@ -90,6 +95,24 @@ def _contains_leakage(text: str) -> bool:
     return _matches(_INSTRUCTION_EXTRACTION_PATTERNS + _RUBRIC_EXTRACTION_PATTERNS, text)
 
 
+def _looks_english_for_turkish_experience(text: str) -> bool:
+    patterns = [
+        r"\btell me\b",
+        r"\bhow would you\b",
+        r"\bwhat would you\b",
+        r"\bcan you\b",
+        r"\bcould you\b",
+        r"\blet'?s\b",
+        r"\bplease\b",
+        r"\bcompetitor\b",
+        r"\bcheaper\b",
+        r"\bonboarding\b",
+        r"\bcustomer\b",
+        r"\byour\b",
+    ]
+    return _matches(patterns, text)
+
+
 def validate_output_guardrail(result: ConversationResultDTO, config: ConversationConfigDTO) -> ConversationResultDTO:
     if result.action not in {"continue", "complete"}:
         raise ValueError("Invalid conversation action.")
@@ -100,6 +123,8 @@ def validate_output_guardrail(result: ConversationResultDTO, config: Conversatio
         raise ValueError("Conversation output is too long.")
     if _contains_leakage(text):
         raise ValueError("Conversation output exposed protected instructions or rubric details.")
+    if config.language == "tr" and _looks_english_for_turkish_experience(text):
+        raise ValueError("Conversation output was not in Turkish.")
     if config.persona and re.search(r"\bas an ai\b|\bi am your coach\b|\bi cannot play\b", text, flags=re.IGNORECASE):
         raise ValueError("Conversation output escaped the configured persona.")
     return result.model_copy(update={"assistantText": text})

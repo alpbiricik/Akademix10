@@ -14,7 +14,7 @@ class MockConversationProvider:
             action = "complete"
         else:
             focus = request.allowedTopics[0] if request.allowedTopics else "senaryo"
-            text = f"{request.persona}: Bunu duyuyorum. {focus} acisindan bir sonraki cumleni nasil kurardin?"
+            text = f"Bunu duyuyorum. {focus} acisindan bir sonraki cumleni nasil kurardin?"
             action = "continue"
         return ConversationResultDTO(
             assistantText=text,

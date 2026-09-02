@@ -11,6 +11,8 @@ ScoringRecommendation = Literal["continue", "retry_state", "review_feedback", "c
 ReportType = Literal["learner_session", "company_aggregate", "platform_aggregate"]
 ConversationAction = Literal["continue", "complete"]
 ConversationGuardrailDecision = Literal["allow", "redirect", "block"]
+STTEventType = Literal["stream_started", "speech_started", "partial_transcript", "final_transcript", "committed_transcript", "utterance_end", "error", "stream_closed"]
+TTSEventType = Literal["synthesis_started", "first_audio", "audio_payload", "synthesis_completed", "error"]
 ConversationGuardrailReason = Literal[
     "in_scope",
     "off_topic",
@@ -78,6 +80,7 @@ class TrainingModuleDTO(BaseModel):
 class ConversationConfigDTO(BaseModel):
     minTurns: int = 1
     maxTurns: int = 3
+    language: str = "tr"
     persona: str
     scenario: str
     objective: str
@@ -192,6 +195,7 @@ class ConversationRequestDTO(BaseModel):
     sessionId: str
     stateId: str
     turnNumber: int
+    language: str = "tr"
     persona: str
     scenario: str
     objective: str
@@ -232,6 +236,82 @@ class ConversationTurnResponseDTO(BaseModel):
     conversationComplete: bool
     guardrail: ConversationGuardrailResultDTO
     providerMetadata: ProviderMetadataDTO
+
+
+class SpeechToTextMetadataDTO(BaseModel):
+    provider: str
+    model: str
+    language: str
+    confidence: float | None = None
+    firstPartialMs: int | None = None
+    finalTranscriptMs: int | None = None
+    utteranceEndMs: int | None = None
+    errorCode: str | None = None
+
+
+class SpeechToTextEventDTO(BaseModel):
+    type: STTEventType
+    transcript: str | None = None
+    isFinal: bool = False
+    speechFinal: bool = False
+    metadata: SpeechToTextMetadataDTO
+
+
+class TextToSpeechMetadataDTO(BaseModel):
+    provider: str
+    model: str
+    voice: str
+    language: str
+    characterCount: int = 0
+    firstAudioMs: int | None = None
+    synthesisCompleteMs: int | None = None
+    errorCode: str | None = None
+
+
+class TextToSpeechRequestDTO(BaseModel):
+    text: str
+    language: str = "tr"
+    voice: str = "mock-tr"
+
+
+class TextToSpeechResultDTO(BaseModel):
+    audioPayloadBase64: str | None = None
+    contentType: str | None = None
+    textFallback: str
+    metadata: TextToSpeechMetadataDTO
+
+
+class VoiceTurnMetricsDTO(BaseModel):
+    streamStartedAt: str | None = None
+    firstPartialMs: int | None = None
+    finalTranscriptMs: int | None = None
+    utteranceEndMs: int | None = None
+    conversationResponseMs: int | None = None
+    firstAudioMs: int | None = None
+    synthesisCompleteMs: int | None = None
+    speechEndToFirstAudioMs: int | None = None
+
+
+class VoiceTurnResultDTO(BaseModel):
+    stateId: str
+    turnNumber: int
+    assistantText: str
+    action: ConversationAction
+    conversationComplete: bool
+    guardrail: ConversationGuardrailResultDTO
+    conversationProviderMetadata: ProviderMetadataDTO
+    sttMetadata: SpeechToTextMetadataDTO
+    tts: TextToSpeechResultDTO
+    metrics: VoiceTurnMetricsDTO
+
+
+class VoiceOpeningResultDTO(BaseModel):
+    stateId: str
+    assistantText: str
+    conversationComplete: bool = False
+    conversationProviderMetadata: ProviderMetadataDTO
+    tts: TextToSpeechResultDTO
+    metrics: VoiceTurnMetricsDTO
 
 
 class TokenCostMetadataDTO(BaseModel):
@@ -431,6 +511,13 @@ class TrainingSessionDTO(BaseModel):
     feedback: list[SessionFeedbackDTO] = Field(default_factory=list)
     skillScores: list[SkillScoreDTO] = Field(default_factory=list)
     usage: SessionUsageDTO
+
+
+class LearnerSessionDataDTO(BaseModel):
+    session: TrainingSessionDTO
+    states: list[TrainingStateDTO]
+    module: TrainingModuleDTO
+    template: TrainingTemplateDTO
 
 
 class SessionCostLogDTO(BaseModel):

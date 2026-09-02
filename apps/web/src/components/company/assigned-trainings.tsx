@@ -5,7 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ClipboardList, PlayCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { BROWSER_ASSIGNMENTS_STORAGE_KEY, getPlatformTemplates } from "@/lib/adapters/platformAdapter";
+import { getCompanyTrainings } from "@/lib/adapters/companyAdapter";
+import { BROWSER_ASSIGNMENTS_STORAGE_KEY } from "@/lib/adapters/platformAdapter";
 import type { TrainingTemplateDTO } from "@/lib/contracts/dtos";
 import type { TrainingTemplate } from "@/lib/state-machine/types";
 
@@ -27,7 +28,7 @@ export function AssignedTrainings() {
     queueMicrotask(() => {
       setAssignments(readAssignments());
     });
-    getPlatformTemplates().then(setTemplates);
+    getCompanyTrainings().then(setTemplates);
   }, []);
 
   const displayItems = useMemo(() => {

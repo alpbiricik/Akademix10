@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, BadgeDollarSign, Bot, CheckCircle2, Circle, CircleDot, FileText, MessageSquareText, PlayCircle, RotateCcw, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, ArrowLeft, ArrowRight, BadgeDollarSign, Bot, CheckCircle2, Circle, CircleDot, FileText, MessageSquareText, Mic, PlayCircle, RotateCcw, Sparkles, Square } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,37 +15,71 @@ import {
   getCurrentState,
   getSessionProgress,
 } from "@/lib/state-machine/engine";
-import { formatUsd, getStateTypeLabel, getStateTypeTone, isInteractiveState, sortStatesByOrder } from "@/lib/state-machine/utils";
-import { getLearnerTrainings } from "@/lib/adapters/learnerAdapter";
-import { getPlatformTemplates } from "@/lib/adapters/platformAdapter";
-import { completeCurrentState, finalizeSession, getSession, getSessionStates, moveToNextState, moveToPreviousState, resetDemoSession, submitSessionAnswer } from "@/lib/adapters/sessionAdapter";
-import { DATA_SOURCE_MODE } from "@/lib/api/config";
+import { formatUsd, getStateTypeLabel, getStateTypeTone, isAvatarState, isInteractiveState, sortStatesByOrder } from "@/lib/state-machine/utils";
+import { completeCurrentState, finalizeSession, getSessionBundle, moveToNextState, moveToPreviousState, resetDemoSession, startVoiceOpening, submitConversationTurn, submitSessionAnswer } from "@/lib/adapters/sessionAdapter";
+import { API_BASE_URL, DATA_SOURCE_MODE } from "@/lib/api/config";
 import { ApiError } from "@/lib/api/errors";
 import type { MockAIFeedback, TrainingModule, TrainingSession, TrainingState, TrainingTemplate } from "@/lib/state-machine/types";
+
+type VoiceStatus = "idle" | "listening" | "processing" | "speaking" | "complete" | "error";
 
 export function SessionRunner({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<TrainingSession | null>(null);
   const [states, setStates] = useState<TrainingState[]>([]);
-  const [trainings, setTrainings] = useState<TrainingModule[]>([]);
-  const [templates, setTemplates] = useState<TrainingTemplate[]>([]);
+  const [training, setTraining] = useState<TrainingModule | null>(null);
+  const [template, setTemplate] = useState<TrainingTemplate | null>(null);
   const [draft, setDraft] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("idle");
+  const [voicePartial, setVoicePartial] = useState("");
+  const [voiceFinal, setVoiceFinal] = useState("");
+  const [voiceAssistantText, setVoiceAssistantText] = useState("");
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const submitInFlightRef = useRef(false);
   const finalizeInFlightRef = useRef(false);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const voiceSocketRef = useRef<WebSocket | null>(null);
+  const voiceStartInFlightRef = useRef(false);
+  const voiceOpeningKeyRef = useRef<string | null>(null);
+  const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const cleanupVoiceTurn = useCallback(() => {
+    audioProcessorRef.current?.disconnect();
+    audioSourceRef.current?.disconnect();
+    void audioContextRef.current?.close();
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    audioProcessorRef.current = null;
+    audioSourceRef.current = null;
+    audioContextRef.current = null;
+    mediaStreamRef.current = null;
+    if (voiceSocketRef.current?.readyState === WebSocket.OPEN) voiceSocketRef.current.send("cancel");
+    voiceSocketRef.current?.close();
+    voiceSocketRef.current = null;
+    voiceAudioRef.current?.pause();
+    voiceAudioRef.current = null;
+    voiceStartInFlightRef.current = false;
+  }, []);
 
   useEffect(() => {
     let active = true;
     async function load() {
-      const loaded = (await getSession(sessionId)) ?? await resetDemoSession();
-      const loadedStates = await getSessionStates(loaded.id);
-      const [loadedTrainings, loadedTemplates] = await Promise.all([getLearnerTrainings(), getPlatformTemplates()]);
+      let bundle = await getSessionBundle(sessionId);
+      if (!bundle) {
+        const reset = await resetDemoSession();
+        bundle = await getSessionBundle(reset.id);
+      }
+      if (!bundle) return;
+      const { session: loaded, states: loadedStates, module: loadedTraining, template: loadedTemplate } = bundle;
       if (!active) return;
       setSession(isTrainingSession(loaded) ? { ...loaded, usage: calculateMockUsage(loaded, loadedStates as TrainingState[]) } : null);
       setStates(loadedStates as TrainingState[]);
-      setTrainings(loadedTrainings.filter((item): item is TrainingModule => "stateIds" in item));
-      setTemplates(loadedTemplates as TrainingTemplate[]);
+      setTraining(loadedTraining);
+      setTemplate(loadedTemplate);
       if (DATA_SOURCE_MODE === "api") {
         setDrafts(readSessionDrafts(loaded.id));
       }
@@ -56,13 +90,22 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     };
   }, [sessionId]);
 
+  useEffect(() => {
+    return () => {
+      cleanupVoiceTurn();
+    };
+  }, [cleanupVoiceTurn]);
+
   const sortedStates = useMemo(() => sortStatesByOrder(states), [states]);
   const currentState = session ? getCurrentState(session, sortedStates) : null;
   const progress = session ? getSessionProgress(session, sortedStates) : { completed: 0, total: sortedStates.length, percent: 0 };
-  const training = session ? trainings.find((item) => item.id === session.moduleId) : null;
-  const template = session ? templates.find((item) => item.id === session.templateId) : null;
   const currentFeedback = session && currentState ? session.feedback.find((item) => item.stateId === currentState.id) : undefined;
   const currentStateId = currentState?.id;
+
+  const applySession = useCallback((next: TrainingSession) => {
+    const withUsage = { ...next, usage: calculateMockUsage(next, sortedStates) };
+    setSession(withUsage);
+  }, [sortedStates]);
 
   useEffect(() => {
     if (!session || !currentStateId) return;
@@ -72,10 +115,55 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     });
   }, [currentStateId, drafts, session]);
 
-  function applySession(next: TrainingSession) {
-    const withUsage = { ...next, usage: calculateMockUsage(next, sortedStates) };
-    setSession(withUsage);
-  }
+  useEffect(() => {
+    cleanupVoiceTurn();
+    voiceOpeningKeyRef.current = null;
+    queueMicrotask(() => {
+      setVoiceStatus("idle");
+      setVoicePartial("");
+      setVoiceFinal("");
+      setVoiceAssistantText("");
+      setVoiceError(null);
+    });
+  }, [cleanupVoiceTurn, currentStateId]);
+
+  useEffect(() => {
+    if (!session || !currentState || !isAvatarState(currentState)) return;
+    if (session.completedStateIds.includes(currentState.id)) return;
+    const openingKey = `${session.id}:${currentState.id}`;
+    if (voiceOpeningKeyRef.current === openingKey) return;
+    voiceOpeningKeyRef.current = openingKey;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setVoiceStatus("processing");
+      setVoiceError(null);
+      setVoicePartial("");
+      setVoiceFinal("");
+      setVoiceAssistantText("");
+      startVoiceOpening(session.id, currentState.id)
+        .then(async (result) => {
+          if (cancelled) return;
+          setVoiceAssistantText(result.assistantText);
+          setVoiceStatus("speaking");
+          await playVoiceAudio(result.tts?.audioPayloadBase64, result.tts?.contentType);
+          if (cancelled) return;
+          setVoiceStatus(result.conversationComplete ? "complete" : "idle");
+          if (result.conversationComplete) {
+            applySession({ ...session, completedStateIds: Array.from(new Set([...session.completedStateIds, currentState.id])) });
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setVoiceError("Voice opening failed. Type your response instead.");
+            setVoiceStatus("error");
+          }
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [applySession, currentState, session]);
 
   async function handleSubmit() {
     if (!session || !currentState || !draft.trim() || submitInFlightRef.current) return;
@@ -123,9 +211,12 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
 
   async function handleReset() {
     const reset = await resetDemoSession();
-    const resetStates = await getSessionStates(reset.id);
+    const bundle = await getSessionBundle(reset.id);
+    const resetStates = bundle?.states ?? [];
     setStates(resetStates as TrainingState[]);
     setSession({ ...reset, usage: calculateMockUsage(reset, resetStates as TrainingState[]) });
+    setTraining(bundle?.module ?? null);
+    setTemplate(bundle?.template ?? null);
     setDraft("");
     setDrafts({});
     clearSessionDrafts(reset.id);
@@ -156,6 +247,155 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     } finally {
       finalizeInFlightRef.current = false;
       setIsSubmitting(false);
+    }
+  }
+
+  function websocketUrl(path: string) {
+    const base = API_BASE_URL.replace(/^http/, "ws");
+    return `${base}${path}`;
+  }
+
+  function stopAudioCapture() {
+    audioProcessorRef.current?.disconnect();
+    audioSourceRef.current?.disconnect();
+    void audioContextRef.current?.close();
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    audioProcessorRef.current = null;
+    audioSourceRef.current = null;
+    audioContextRef.current = null;
+    mediaStreamRef.current = null;
+  }
+
+  function playVoiceAudio(audioPayloadBase64?: string | null, contentType?: string | null) {
+    if (!audioPayloadBase64) return Promise.resolve();
+    try {
+      const bytes = Uint8Array.from(atob(audioPayloadBase64), (char) => char.charCodeAt(0));
+      const blob = new Blob([bytes], { type: contentType || "audio/mpeg" });
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      voiceAudioRef.current = audio;
+      return new Promise<void>((resolve) => {
+        const finish = () => {
+          URL.revokeObjectURL(url);
+          if (voiceAudioRef.current === audio) voiceAudioRef.current = null;
+          resolve();
+        };
+        audio.onended = finish;
+        audio.onerror = finish;
+        void audio.play().catch(finish);
+      });
+    } catch {
+      return Promise.resolve();
+    }
+  }
+
+  async function handleStartVoiceTurn() {
+    if (!session || !currentState || voiceStartInFlightRef.current || voiceStatus !== "idle") return;
+    if (session.completedStateIds.includes(currentState.id)) {
+      setVoiceError("This conversation state is already complete.");
+      setVoiceStatus("error");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === "undefined") {
+      setVoiceError("Microphone capture is not available in this browser.");
+      setVoiceStatus("error");
+      return;
+    }
+    voiceStartInFlightRef.current = true;
+    setVoiceError(null);
+    setVoicePartial("");
+    setVoiceFinal("");
+    setVoiceAssistantText("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      const socket = new WebSocket(websocketUrl(`/api/learner/sessions/${session.id}/voice/stt`));
+      voiceSocketRef.current = socket;
+      socket.binaryType = "arraybuffer";
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ stateId: currentState.id, mockRole: "learner", accessToken: readSupabaseAccessToken() }));
+        const context = new AudioContext();
+        const source = context.createMediaStreamSource(stream);
+        const processor = context.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = (audioEvent) => {
+          if (socket.readyState !== WebSocket.OPEN) return;
+          const input = audioEvent.inputBuffer.getChannelData(0);
+          socket.send(floatToPcm16(input, context.sampleRate, 16000));
+        };
+        source.connect(processor);
+        processor.connect(context.destination);
+        audioContextRef.current = context;
+        audioSourceRef.current = source;
+        audioProcessorRef.current = processor;
+        setVoiceStatus("listening");
+        voiceStartInFlightRef.current = false;
+      };
+      socket.onmessage = (event) => {
+        const payload = JSON.parse(event.data as string) as { type?: string; transcript?: string; result?: { assistantText?: string; conversationComplete?: boolean; tts?: { audioPayloadBase64?: string | null; contentType?: string | null } } ; code?: string };
+        if (payload.type === "partial_transcript") setVoicePartial(payload.transcript ?? "");
+        if (payload.type === "final_transcript" || payload.type === "committed_transcript") {
+          setVoiceFinal(payload.transcript ?? "");
+          setVoiceStatus("processing");
+          stopAudioCapture();
+        }
+        if (payload.type === "voice_turn_result" && payload.result) {
+          setVoiceAssistantText(payload.result.assistantText ?? "");
+          setVoiceStatus("speaking");
+          void playVoiceAudio(payload.result.tts?.audioPayloadBase64, payload.result.tts?.contentType).then(() => {
+            setVoiceStatus(payload.result?.conversationComplete ? "complete" : "idle");
+          });
+          if (payload.result.conversationComplete && session && currentState) {
+            applySession({ ...session, completedStateIds: Array.from(new Set([...session.completedStateIds, currentState.id])) });
+          }
+        }
+        if (payload.type === "error") {
+          setVoiceError(voiceErrorMessage(payload.code));
+          setVoiceStatus("error");
+          cleanupVoiceTurn();
+        }
+      };
+      socket.onerror = () => {
+        setVoiceError("Voice streaming connection failed. Type your response instead.");
+        setVoiceStatus("error");
+        cleanupVoiceTurn();
+      };
+      socket.onclose = () => {
+        voiceStartInFlightRef.current = false;
+      };
+    } catch (error) {
+      cleanupVoiceTurn();
+      setVoiceError(error instanceof DOMException && error.name === "NotAllowedError" ? "Microphone permission was denied." : "Microphone could not be started.");
+      setVoiceStatus("error");
+    }
+  }
+
+  function handleStopVoiceTurn() {
+    if (voiceStatus === "listening") {
+      stopAudioCapture();
+      if (voiceSocketRef.current?.readyState === WebSocket.OPEN) voiceSocketRef.current.send("stop");
+      setVoiceStatus("processing");
+    } else {
+      cleanupVoiceTurn();
+      setVoiceStatus("idle");
+    }
+  }
+
+  async function handleTypedConversationTurn(text: string) {
+    if (!session || !currentState || !text.trim() || submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
+    setVoiceStatus("processing");
+    setVoiceError(null);
+    try {
+      const result = await submitConversationTurn(session.id, { stateId: currentState.id, learnerText: text.trim() });
+      setVoiceFinal(text.trim());
+      setVoiceAssistantText(result.assistantText);
+      if (result.conversationComplete) applySession({ ...session, completedStateIds: Array.from(new Set([...session.completedStateIds, currentState.id])) });
+      setVoiceStatus(result.conversationComplete ? "complete" : "idle");
+    } catch {
+      setVoiceError("Conversation turn failed. Try typing again.");
+      setVoiceStatus("error");
+    } finally {
+      submitInFlightRef.current = false;
     }
   }
 
@@ -222,6 +462,19 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
                   }}
                   onSubmit={handleSubmit}
                   onMoveNext={handleMoveNext}
+                />
+              ) : null}
+              {isAvatarState(currentState) ? (
+                <VoicePocBox
+                  status={voiceStatus}
+                  partial={voicePartial}
+                  finalTranscript={voiceFinal}
+                  assistantText={voiceAssistantText}
+                  error={voiceError}
+                  disabled={session.completedStateIds.includes(currentState.id) || voiceStatus === "complete"}
+                  onStart={handleStartVoiceTurn}
+                  onStop={handleStopVoiceTurn}
+                  onTypedSubmit={handleTypedConversationTurn}
                 />
               ) : null}
               <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-5">
@@ -351,6 +604,106 @@ function InteractionBox({
       {feedback ? <FeedbackCard feedback={feedback} /> : null}
     </div>
   );
+}
+
+function VoicePocBox({
+  status,
+  partial,
+  finalTranscript,
+  assistantText,
+  error,
+  disabled,
+  onStart,
+  onStop,
+  onTypedSubmit,
+}: {
+  status: VoiceStatus;
+  partial: string;
+  finalTranscript: string;
+  assistantText: string;
+  error: string | null;
+  disabled: boolean;
+  onStart: () => void;
+  onStop: () => void;
+  onTypedSubmit: (text: string) => void;
+}) {
+  const [typed, setTyped] = useState("");
+  const busy = status === "listening" || status === "processing" || status === "speaking";
+  const statusText = status === "listening" ? "Listening" : status === "processing" ? "Processing" : status === "speaking" ? "Speaking" : disabled || status === "complete" ? "Conversation complete" : "Ready";
+  return (
+    <div className="rounded-lg border border-teal-200 bg-teal-50 p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="font-medium text-teal-950">Voice turn</p>
+          <p className="text-sm text-teal-800">{statusText}</p>
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" onClick={onStart} disabled={busy || disabled}>
+            <Mic className="h-4 w-4" />
+            Start
+          </Button>
+          <Button type="button" variant="outline" onClick={onStop} disabled={!busy}>
+            <Square className="h-4 w-4" />
+            Stop
+          </Button>
+        </div>
+      </div>
+      {partial ? <p className="mt-3 rounded-md bg-white px-3 py-2 text-sm text-slate-600">Partial: {partial}</p> : null}
+      {finalTranscript ? <p className="mt-3 rounded-md bg-white px-3 py-2 text-sm font-medium text-slate-900">Final: {finalTranscript}</p> : null}
+      {assistantText ? <p className="mt-3 rounded-md border border-teal-200 bg-white px-3 py-2 text-sm leading-6 text-teal-950">{assistantText}</p> : null}
+      {error ? (
+        <div role="alert" className="mt-3 flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{error}</p>
+        </div>
+      ) : null}
+      <div className="mt-4 border-t border-teal-200 pt-4">
+        <Textarea value={typed} onChange={(event) => setTyped(event.target.value)} placeholder="Type the same turn if microphone or STT is unavailable..." className="min-h-24 bg-white" />
+        <div className="mt-2 flex justify-end">
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={!typed.trim() || busy || disabled}
+            onClick={() => {
+              onTypedSubmit(typed);
+              setTyped("");
+            }}
+          >
+            <Sparkles className="h-4 w-4" />
+            Send typed turn
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function readSupabaseAccessToken() {
+  try {
+    const raw = window.localStorage.getItem("akademx10.supabaseSession");
+    return raw ? (JSON.parse(raw) as { accessToken?: string }).accessToken ?? null : null;
+  } catch {
+    return null;
+  }
+}
+
+function voiceErrorMessage(code?: string) {
+  if (code === "stt_provider_not_configured") return "Speech recognition is not configured. Type your response instead.";
+  if (code === "empty_transcript") return "No clear speech was detected. Try again or type your response.";
+  if (code === "session_not_found" || code === "state_not_found") return "This voice turn is no longer available.";
+  return "Voice turn failed. Type your response instead.";
+}
+
+function floatToPcm16(input: Float32Array, sourceRate: number, targetRate: number) {
+  const ratio = sourceRate / targetRate;
+  const length = Math.floor(input.length / ratio);
+  const output = new Int16Array(length);
+  for (let index = 0; index < length; index += 1) {
+    const sample = input[Math.floor(index * ratio)] ?? 0;
+    const clamped = Math.max(-1, Math.min(1, sample));
+    output[index] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+  }
+  return output.buffer;
 }
 
 function getSubmitErrorMessage(error: unknown) {

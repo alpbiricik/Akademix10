@@ -112,6 +112,14 @@ class ReportEndpointTests(unittest.TestCase):
         self.assertEqual(payload["sessionId"], self.session.id)
         self.assertEqual(payload["overallScore"], 85)
 
+    def test_learner_session_response_contains_training_context(self):
+        status, payload = asgi_request("GET", f"/api/learner/sessions/{self.session.id}", "learner")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["session"]["id"], self.session.id)
+        self.assertEqual(payload["module"]["id"], self.session.moduleId)
+        self.assertEqual(payload["template"]["id"], self.session.templateId)
+        self.assertEqual(len(payload["states"]), len(mock_store.training_states))
+
     def test_learner_cannot_access_other_learner_session(self):
         status, payload = asgi_request("GET", f"/api/learner/sessions/{self.secondary.id}/report", "learner")
         self.assertEqual(status, 404)
@@ -145,8 +153,10 @@ class ReportEndpointTests(unittest.TestCase):
     def test_learner_cannot_access_company_or_platform_endpoints(self):
         company_status, _ = asgi_request("GET", "/api/company/reports/aggregate", "learner")
         platform_status, _ = asgi_request("GET", "/api/platform/reports/aggregate", "learner")
+        platform_templates_status, _ = asgi_request("GET", "/api/platform/templates", "learner")
         self.assertEqual(company_status, 403)
         self.assertEqual(platform_status, 403)
+        self.assertEqual(platform_templates_status, 403)
 
     def test_company_cannot_access_learner_or_platform_endpoints(self):
         learner_status, _ = asgi_request("GET", f"/api/learner/sessions/{self.session.id}/report", "company")

@@ -72,6 +72,7 @@ conversation_configs = {
     "avatar": ConversationConfigDTO(
         minTurns=1,
         maxTurns=2,
+        language="tr",
         persona="Avatar coach",
         scenario="A short coaching checkpoint inside the current customer communication training.",
         objective="Learner practices concise, calm workplace communication.",
@@ -82,6 +83,7 @@ conversation_configs = {
     "roleplay": ConversationConfigDTO(
         minTurns=2,
         maxTurns=3,
+        language="tr",
         persona="Skeptical renewal customer",
         scenario="The customer is unsure whether renewing the platform is worth the cost.",
         objective="Learner practices empathy, objection handling, value framing, and next-step closing.",

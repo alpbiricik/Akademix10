@@ -1,14 +1,42 @@
 import { apiGet, apiPatch, apiPost } from "@/lib/api/client";
 import { DATA_SOURCE_MODE } from "@/lib/api/config";
 import type { SessionAnswerPayload, SessionFinalizePayload, SessionStateUpdatePayload } from "@/lib/api/types";
-import type { StructuredScoringResultDTO, TrainingStateDTO } from "@/lib/contracts/dtos";
+import type { StructuredScoringResultDTO } from "@/lib/contracts/dtos";
 import { applyMockSkillImpact, completeCurrentState as completeSessionCurrentState, generateMockFeedback, getCurrentState, moveToNextState as moveSessionToNextState, moveToPreviousState as moveSessionToPreviousState, submitAnswer } from "@/lib/state-machine/engine";
 import { createOrResetDemoSession, getSessionById, getStatesForSession, updateStoredSession } from "@/lib/repositories/sessionRepository";
-import type { TrainingSession, TrainingState } from "@/lib/state-machine/types";
+import { getTrainingById, getTrainingTemplateById } from "@/lib/repositories/trainingRepository";
+import type { TrainingModule, TrainingSession, TrainingState, TrainingTemplate } from "@/lib/state-machine/types";
+
+export interface ConversationTurnResponse {
+  stateId: string;
+  turnNumber: number;
+  assistantText: string;
+  action: "continue" | "complete";
+  conversationComplete: boolean;
+  providerMetadata: {
+    provider: string;
+    model: string;
+    attemptCount: number;
+    fallbackUsed: boolean;
+    latencyMs: number | null;
+  };
+}
+
+export interface VoiceAudioResponse {
+  stateId: string;
+  assistantText: string;
+  conversationComplete: boolean;
+  tts?: {
+    audioPayloadBase64?: string | null;
+    contentType?: string | null;
+  };
+}
 
 interface SessionApiResponse {
   session: TrainingSession;
-  states: TrainingStateDTO[];
+  states: TrainingState[];
+  module: TrainingModule;
+  template: TrainingTemplate;
 }
 
 interface AnswerApiResponse {
@@ -23,14 +51,39 @@ interface NormalizedAnswerResponse {
   scoringResult: StructuredScoringResultDTO | null;
 }
 
+export interface SessionBundle {
+  session: TrainingSession;
+  states: TrainingState[];
+  module: TrainingModule;
+  template: TrainingTemplate;
+}
+
+function getMockSessionBundle(sessionId: string): SessionBundle | null {
+  const session = getSessionById(sessionId);
+  if (!session) return null;
+  const states = getStatesForSession(sessionId);
+  const trainingModule = getTrainingById(session.moduleId);
+  const template = getTrainingTemplateById(session.templateId);
+  if (!trainingModule || !template) return null;
+  return { session, states, module: trainingModule, template };
+}
+
+export function getSessionBundle(sessionId: string): Promise<SessionBundle | null> {
+  if (DATA_SOURCE_MODE === "mock") return Promise.resolve(getMockSessionBundle(sessionId));
+  return apiGet<SessionApiResponse>(`/api/learner/sessions/${sessionId}`, { mockRole: "learner" }).then((response) => ({
+    session: response.session,
+    states: response.states,
+    module: response.module,
+    template: response.template,
+  }));
+}
+
 export function getSession(sessionId: string): Promise<TrainingSession | null> {
-  if (DATA_SOURCE_MODE === "mock") return Promise.resolve(getSessionById(sessionId));
-  return apiGet<SessionApiResponse>(`/api/learner/sessions/${sessionId}`, { mockRole: "learner" }).then((response) => response.session);
+  return getSessionBundle(sessionId).then((response) => response?.session ?? null);
 }
 
 export function getSessionStates(sessionId: string): Promise<TrainingState[]> {
-  if (DATA_SOURCE_MODE === "mock") return Promise.resolve(getStatesForSession(sessionId));
-  return apiGet<{ states: TrainingState[] }>(`/api/learner/sessions/${sessionId}`, { mockRole: "learner" }).then((response) => response.states);
+  return getSessionBundle(sessionId).then((response) => response?.states ?? []);
 }
 
 export function updateSessionState(sessionId: string, payload: SessionStateUpdatePayload) {
@@ -98,6 +151,31 @@ export function submitSessionAnswerWithScoring(sessionId: string, payload: Sessi
 
 export function submitSessionAnswer(sessionId: string, payload: SessionAnswerPayload) {
   return submitSessionAnswerWithScoring(sessionId, payload).then((response) => response?.session ?? null);
+}
+
+export function submitConversationTurn(sessionId: string, payload: { stateId: string; learnerText: string }) {
+  if (DATA_SOURCE_MODE === "mock") {
+    return Promise.resolve<ConversationTurnResponse>({
+      stateId: payload.stateId,
+      turnNumber: 1,
+      assistantText: "Bu senaryoda devam edelim. Bir sonraki adimi nasil netlestirirdin?",
+      action: "continue",
+      conversationComplete: false,
+      providerMetadata: { provider: "mock", model: "frontend-conversation-mock-v1", attemptCount: 1, fallbackUsed: false, latencyMs: null },
+    });
+  }
+  return apiPost<ConversationTurnResponse>(`/api/learner/sessions/${sessionId}/conversation-turn`, payload, { mockRole: "learner" });
+}
+
+export function startVoiceOpening(sessionId: string, stateId: string) {
+  if (DATA_SOURCE_MODE === "mock") {
+    return Promise.resolve<VoiceAudioResponse>({
+      stateId,
+      assistantText: "Merhaba. Bu senaryoda musteriyle nasil baslamak istersin?",
+      conversationComplete: false,
+    });
+  }
+  return apiPost<VoiceAudioResponse>(`/api/learner/sessions/${sessionId}/voice/opening`, { stateId, learnerText: "" }, { mockRole: "learner" });
 }
 
 export function finalizeSession(sessionId: string, payload: SessionFinalizePayload) {

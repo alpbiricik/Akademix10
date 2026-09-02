@@ -1,9 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from app.core.auth import Principal, require_role, to_mock_principal
+from app.core.auth import get_current_principal
+from app.core.config import (
+    DEEPGRAM_API_KEY,
+    DEEPGRAM_STT_ENDPOINTING_MS,
+    DEEPGRAM_STT_LANGUAGE,
+    DEEPGRAM_STT_MODEL,
+    ELEVENLABS_API_KEY,
+    ELEVENLABS_STT_COMMIT_STRATEGY,
+    ELEVENLABS_STT_LANGUAGE,
+    ELEVENLABS_STT_MODEL,
+    ELEVENLABS_STT_VAD_SILENCE_THRESHOLD_SECS,
+    STT_PROVIDER,
+)
 from app.db.database import DatabaseMode, get_database_mode
-from app.db.supabase_mappers import enrollment_from_row, session_from_row, state_from_row, usage_from_row
+from app.db.supabase_mappers import enrollment_from_row, module_from_row, session_from_row, state_from_row, template_from_row, usage_from_row
 from app.db.supabase_rest import SupabaseRequestError, SupabaseUserClient
 from app.schemas.dtos import (
     ConversationTurnRequestDTO,
@@ -11,13 +24,17 @@ from app.schemas.dtos import (
     DimensionScoreDTO,
     EnrollmentDTO,
     GuardrailFlagDTO,
+    LearnerSessionDataDTO,
     LearnerSessionReportDTO,
     ProviderMetadataDTO,
     ReportDTO,
     SkillImpactDTO,
     StructuredScoringResultDTO,
     TokenCostMetadataDTO,
+    AvatarPolicyDTO,
     TrainingSessionDTO,
+    TrainingTemplateDTO,
+    VoiceOpeningResultDTO,
 )
 from app.services import mock_store
 from app.services import conversation_service
@@ -35,8 +52,12 @@ from app.services import rubric_repository
 from app.services import scoring_repository
 from app.services import scoring_service
 from app.services import session_engine
+from app.services.deepgram_stt_provider import DeepgramSTTConfigurationError, DeepgramStreamingSpeechToTextProvider
+from app.services.elevenlabs_stt_provider import ElevenLabsSTTConfigurationError, ElevenLabsSpeechToTextProvider
+from app.services.mock_speech_to_text_provider import MockSpeechToTextProvider
 from app.services.report_errors import ReportGenerationError
 from app.services.scoring_errors import AnswerGuardrailError, InvalidProviderOutputError, InvalidRubricError, MaxQueriesPerStateError, ProviderRetryExhaustedError
+from app.services.voice_turn_service import EmptyTranscriptError, VoiceTurnOrchestrator
 
 router = APIRouter(prefix="/api/learner", tags=["learner"])
 
@@ -71,11 +92,72 @@ def _load_session(client: SupabaseUserClient, session_id: str) -> TrainingSessio
     return session_from_row(rows[0], usage_from_row(usage_rows[0] if usage_rows else None))
 
 
+def _load_session_data(client: SupabaseUserClient, session_id: str) -> LearnerSessionDataDTO:
+    session = _load_session(client, session_id)
+    state_rows = client.select("training_states", f"select=*&module_id=eq.{session.moduleId}&order=order_index.asc")
+    states = [state_from_row(row) for row in state_rows]
+    module_rows = client.select("training_modules", f"select=*&id=eq.{session.moduleId}&limit=1")
+    if not module_rows:
+        raise HTTPException(status_code=404, detail="Training context not found.")
+    module = module_from_row(module_rows[0], [state.id for state in states])
+    template_rows = client.select("training_templates", f"select=*&id=eq.{session.templateId}&limit=1")
+    template = template_from_row(template_rows[0]) if template_rows else _template_summary_from_module(session.templateId, module, states)
+    return LearnerSessionDataDTO(
+        session=session,
+        states=states,
+        module=module,
+        template=template,
+    )
+
+
+def _template_summary_from_module(template_id: str, module, states) -> TrainingTemplateDTO:
+    skill_tags = sorted({tag for state in states for tag in state.skillTags})
+    avatar_budget_sec = sum(state.avatarBudgetSec for state in states if state.avatarEnabled)
+    avatar_target_min = round(avatar_budget_sec / 60, 2) if avatar_budget_sec else 0
+    return TrainingTemplateDTO(
+        id=template_id,
+        title=module.title,
+        description=module.description,
+        category="Assigned training",
+        estimatedDurationMin=module.durationMin,
+        defaultStateCount=len(states),
+        skillTags=skill_tags,
+        status=module.status,
+        createdBy="",
+        version="1.0",
+        avatarPolicy=AvatarPolicyDTO(
+            activeTargetMin=avatar_target_min,
+            openCloseTarget=0,
+            bufferedBillableMin=avatar_target_min,
+            safeBudgetUsd=0,
+        ),
+    )
+
+
 def _authorize_mock_session(session: TrainingSessionDTO, principal: Principal) -> None:
     if session.userId != principal.user_id:
         raise HTTPException(status_code=404, detail="Session not found.")
     if principal.company_id and session.companyId != principal.company_id:
         raise HTTPException(status_code=403, detail="Session is outside the learner company boundary.")
+
+
+def _stt_provider():
+    if STT_PROVIDER == "elevenlabs":
+        return ElevenLabsSpeechToTextProvider(
+            api_key=ELEVENLABS_API_KEY,
+            model=ELEVENLABS_STT_MODEL,
+            language=ELEVENLABS_STT_LANGUAGE,
+            commit_strategy=ELEVENLABS_STT_COMMIT_STRATEGY,
+            vad_silence_threshold_secs=ELEVENLABS_STT_VAD_SILENCE_THRESHOLD_SECS,
+        )
+    if STT_PROVIDER == "deepgram":
+        return DeepgramStreamingSpeechToTextProvider(
+            api_key=DEEPGRAM_API_KEY,
+            model=DEEPGRAM_STT_MODEL,
+            language=DEEPGRAM_STT_LANGUAGE,
+            endpointing_ms=DEEPGRAM_STT_ENDPOINTING_MS,
+        )
+    return MockSpeechToTextProvider(model="mock-stt-v1", language=ELEVENLABS_STT_LANGUAGE)
 
 
 def _scoring_results_from_supabase(client: SupabaseUserClient, session_id: str) -> list[StructuredScoringResultDTO]:
@@ -190,18 +272,20 @@ def create_session(principal: Principal = Depends(require_role("learner"))) -> T
     return mock_store.sessions["demo-session-1"]
 
 
-@router.get("/sessions/{session_id}")
-def get_session(session_id: str, principal: Principal = Depends(require_role("learner"))) -> dict[str, object]:
+@router.get("/sessions/{session_id}", response_model=LearnerSessionDataDTO)
+def get_session(session_id: str, principal: Principal = Depends(require_role("learner"))) -> LearnerSessionDataDTO:
     if get_database_mode() == DatabaseMode.SUPABASE:
-        client = _client(principal)
-        session = _load_session(client, session_id)
-        rows = client.select("training_states", f"select=*&module_id=eq.{session.moduleId}&order=order_index.asc")
-        return {"session": session.model_dump(), "states": [state_from_row(row).model_dump() for row in rows]}
+        return _load_session_data(_client(principal), session_id)
     session = mock_store.sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
     _authorize_mock_session(session, principal)
-    return {"session": session.model_dump(), "states": [state.model_dump() for state in mock_store.training_states]}
+    states = [state for state in mock_store.training_states if state.moduleId == session.moduleId]
+    module = next((item for item in mock_store.training_modules if item.id == session.moduleId), None)
+    template = next((item for item in mock_store.training_templates if item.id == session.templateId), None)
+    if not module or not template:
+        raise HTTPException(status_code=404, detail="Training context not found.")
+    return LearnerSessionDataDTO(session=session, states=states, module=module, template=template)
 
 
 @router.patch("/sessions/{session_id}/state", response_model=TrainingSessionDTO)
@@ -303,6 +387,117 @@ def post_conversation_turn(session_id: str, body: ConversationTurnRequestDTO, pr
         guardrail=guardrail,
         providerMetadata=result.providerMetadata,
     )
+
+
+@router.post("/sessions/{session_id}/voice/opening", response_model=VoiceOpeningResultDTO)
+def start_voice_opening(session_id: str, body: ConversationTurnRequestDTO, principal: Principal = Depends(require_role("learner"))) -> VoiceOpeningResultDTO:
+    if get_database_mode() == DatabaseMode.SUPABASE:
+        client = _client(principal)
+        session = _load_session(client, session_id)
+        states = [state_from_row(row) for row in client.select("training_states", f"select=*&module_id=eq.{session.moduleId}&order=order_index.asc")]
+    else:
+        session = mock_store.sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        _authorize_mock_session(session, principal)
+        states = mock_store.training_states
+    state = next((item for item in states if item.id == body.stateId), None)
+    if not state:
+        raise HTTPException(status_code=404, detail="State not found.")
+    try:
+        return VoiceTurnOrchestrator(session, state).start_opening()
+    except ConversationStateError as error:
+        raise HTTPException(status_code=409, detail={"code": error.code, "message": str(error)}) from error
+    except ConversationProviderConfigurationError as error:
+        raise HTTPException(status_code=503, detail={"code": error.code, "message": "Conversation provider is not configured."}) from error
+    except ConversationError as error:
+        raise HTTPException(status_code=502, detail={"code": error.code, "message": str(error)}) from error
+
+
+@router.websocket("/sessions/{session_id}/voice/stt")
+async def stream_voice_turn(websocket: WebSocket, session_id: str) -> None:
+    await websocket.accept()
+    try:
+        start = await websocket.receive_json()
+        state_id = start.get("stateId")
+        mock_role = start.get("mockRole")
+        access_token = start.get("accessToken")
+        if not isinstance(state_id, str):
+            await websocket.send_json({"type": "error", "code": "missing_state_id"})
+            await websocket.close(code=1008)
+            return
+        principal = get_current_principal(
+            authorization=f"Bearer {access_token}" if isinstance(access_token, str) and access_token else None,
+            x_mock_role=mock_role if isinstance(mock_role, str) else None,
+        )
+        if principal.role != "learner":
+            await websocket.send_json({"type": "error", "code": "role_not_allowed"})
+            await websocket.close(code=1008)
+            return
+
+        if get_database_mode() == DatabaseMode.SUPABASE:
+            client = _client(principal)
+            session = _load_session(client, session_id)
+            states = [state_from_row(row) for row in client.select("training_states", f"select=*&module_id=eq.{session.moduleId}&order=order_index.asc")]
+        else:
+            session = mock_store.sessions.get(session_id)
+            if not session:
+                await websocket.send_json({"type": "error", "code": "session_not_found"})
+                await websocket.close(code=1008)
+                return
+            _authorize_mock_session(session, principal)
+            states = mock_store.training_states
+        state = next((item for item in states if item.id == state_id), None)
+        if not state:
+            await websocket.send_json({"type": "error", "code": "state_not_found"})
+            await websocket.close(code=1008)
+            return
+
+        orchestrator = VoiceTurnOrchestrator(session, state)
+        orchestrator.ensure_accepting_turn()
+        provider = _stt_provider()
+
+        async def audio_chunks():
+            while True:
+                message = await websocket.receive()
+                if "bytes" in message and message["bytes"]:
+                    yield message["bytes"]
+                elif "text" in message and message["text"]:
+                    if message["text"] in {"stop", "cancel"}:
+                        break
+
+        async for event in provider.stream(audio_chunks()):
+            if event.type == "partial_transcript":
+                orchestrator.handle_partial(event)
+                await websocket.send_json({"type": event.type, "transcript": event.transcript, "metadata": event.metadata.model_dump()})
+            elif event.type in {"final_transcript", "committed_transcript"}:
+                await websocket.send_json({"type": event.type, "transcript": event.transcript, "metadata": event.metadata.model_dump()})
+                try:
+                    result = orchestrator.handle_final(event)
+                except EmptyTranscriptError:
+                    await websocket.send_json({"type": "error", "code": "empty_transcript"})
+                    continue
+                if result:
+                    if result.conversationComplete:
+                        if get_database_mode() == DatabaseMode.SUPABASE:
+                            completed = set(session.completedStateIds)
+                            completed.add(state.id)
+                            client.patch("training_sessions", f"id=eq.{session_id}", {"completed_state_ids": list(completed)})
+                        elif state.id not in session.completedStateIds:
+                            session.completedStateIds.append(state.id)
+                            mock_store.sessions[session_id] = session
+                    await websocket.send_json({"type": "voice_turn_result", "result": result.model_dump()})
+            else:
+                await websocket.send_json({"type": event.type, "metadata": event.metadata.model_dump()})
+        await websocket.close()
+    except (DeepgramSTTConfigurationError, ElevenLabsSTTConfigurationError):
+        await websocket.send_json({"type": "error", "code": "stt_provider_not_configured"})
+        await websocket.close(code=1011)
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        await websocket.send_json({"type": "error", "code": "voice_stream_error"})
+        await websocket.close(code=1011)
 
 
 @router.post("/sessions/{session_id}/answers")

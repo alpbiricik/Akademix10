@@ -1,4 +1,4 @@
-from app.core.config import CONVERSATION_CONTEXT_TTL_SECONDS, CONVERSATION_PROVIDER, GEMINI_API_KEY, GEMINI_CONVERSATION_MODEL, GEMINI_CONVERSATION_THINKING_LEVEL
+from app.core.config import CONVERSATION_CONTEXT_TTL_SECONDS, CONVERSATION_LANGUAGE, CONVERSATION_PROVIDER, GEMINI_API_KEY, GEMINI_CONVERSATION_MODEL, GEMINI_CONVERSATION_THINKING_LEVEL
 from app.schemas.dtos import (
     ConversationConfigDTO,
     ConversationRequestDTO,
@@ -26,6 +26,7 @@ def default_conversation_config(state: TrainingStateDTO) -> ConversationConfigDT
     return ConversationConfigDTO(
         minTurns=1,
         maxTurns=3,
+        language=CONVERSATION_LANGUAGE,
         persona="Training scenario counterpart",
         scenario=state.prompt,
         objective=f"Learner practices: {', '.join(allowed)}",
@@ -39,7 +40,8 @@ def get_state_conversation_config(state: TrainingStateDTO) -> ConversationConfig
     config = state.conversationConfig or default_conversation_config(state)
     max_turns = max(1, min(config.maxTurns, MAX_CONVERSATION_TURNS))
     min_turns = max(1, min(config.minTurns, max_turns))
-    return config.model_copy(update={"minTurns": min_turns, "maxTurns": max_turns})
+    language = (config.language or CONVERSATION_LANGUAGE).strip().lower() or CONVERSATION_LANGUAGE
+    return config.model_copy(update={"minTurns": min_turns, "maxTurns": max_turns, "language": language})
 
 
 def _cache_key(session_id: str, state_id: str) -> str:
@@ -56,6 +58,86 @@ def _save_context(cache: InMemoryConversationCache, session_id: str, state_id: s
 
 def reset_conversation_context(session_id: str, state_id: str, cache: InMemoryConversationCache = conversation_cache) -> None:
     cache.delete(_cache_key(session_id, state_id))
+
+
+def _assistant_expects_learner_reply(text: str) -> bool:
+    normalized = text.strip().lower()
+    if "?" in normalized:
+        return True
+    followup_markers = (
+        "how would you",
+        "what would you",
+        "can you",
+        "could you",
+        "nasil",
+        "ne dersin",
+        "yanitlar misin",
+        "anlatir misin",
+        "cevabin",
+        "cevap ver",
+    )
+    return any(marker in normalized for marker in followup_markers)
+
+
+def start_training_conversation(
+    session: TrainingSessionDTO,
+    state: TrainingStateDTO,
+    provider: ConversationProvider | None = None,
+    cache: InMemoryConversationCache = conversation_cache,
+) -> ConversationResultDTO:
+    if state.id in session.completedStateIds:
+        raise ConversationStateError("Conversation is already complete for this state.")
+    if state.id != session.currentStateId:
+        raise ConversationStateError("Conversation state must be the current training state.")
+    if not (state.avatarEnabled or state.type in {"avatar", "live_avatar", "roleplay"}):
+        raise ConversationStateError("State is not configured for live conversation.")
+
+    config = get_state_conversation_config(state)
+    context = _load_context(cache, session.id, state.id)
+    if context.get("complete"):
+        raise ConversationStateError("Conversation is already complete for this state.")
+    if context.get("opening"):
+        return ConversationResultDTO.model_validate(context["opening"])
+
+    active_provider = provider or get_conversation_provider()
+    request = ConversationRequestDTO(
+        sessionId=session.id,
+        stateId=state.id,
+        turnNumber=0,
+        language=config.language,
+        persona=config.persona,
+        scenario=config.scenario,
+        objective=config.objective,
+        conversationInstructions=config.conversationInstructions,
+        allowedTopics=config.allowedTopics,
+        completionGuidance=config.completionGuidance,
+        sanitizedLearnerTurn="AI_OPENING_TURN: Start this bounded roleplay. Ask the learner one concise opening question in persona.",
+        temporaryContext=[],
+        minTurns=config.minTurns,
+        maxTurns=config.maxTurns,
+    )
+
+    last_error: Exception | None = None
+    for attempt in range(1, MAX_CONVERSATION_PROVIDER_RETRIES + 2):
+        try:
+            result = active_provider.continue_conversation(request)
+            result.providerMetadata.attemptCount = attempt
+            result = validate_output_guardrail(result, config)
+            break
+        except Exception as error:
+            last_error = error
+    else:
+        result = fallback_result(provider=getattr(active_provider, "provider_name", "conversation"), model="safe-fallback")
+        result.reasonCode = f"opening_retry_exhausted:{type(last_error).__name__ if last_error else 'unknown'}"
+
+    result.action = "continue"
+    _save_context(
+        cache,
+        session.id,
+        state.id,
+        {"turns": context.get("turns", []), "complete": False, "opening": result.model_dump()},
+    )
+    return result
 
 
 def continue_training_conversation(
@@ -78,6 +160,7 @@ def continue_training_conversation(
         raise ConversationStateError("Conversation is already complete for this state.")
 
     previous_turns = [ConversationTurnDTO.model_validate(turn) for turn in context.get("turns", [])]
+    opening = ConversationResultDTO.model_validate(context["opening"]) if context.get("opening") else None
     turn_number = len(previous_turns) + 1
     if turn_number > config.maxTurns:
         result = fallback_result()
@@ -102,6 +185,7 @@ def continue_training_conversation(
         sessionId=session.id,
         stateId=state.id,
         turnNumber=turn_number,
+        language=config.language,
         persona=config.persona,
         scenario=config.scenario,
         objective=config.objective,
@@ -109,7 +193,7 @@ def continue_training_conversation(
         allowedTopics=config.allowedTopics,
         completionGuidance=config.completionGuidance,
         sanitizedLearnerTurn=input_guardrail.safeText,
-        temporaryContext=previous_turns,
+        temporaryContext=([ConversationTurnDTO(turnNumber=0, learnerText="", assistantText=opening.assistantText)] if opening else []) + previous_turns,
         minTurns=config.minTurns,
         maxTurns=config.maxTurns,
     )
@@ -131,10 +215,15 @@ def continue_training_conversation(
         result.action = "complete"
     elif turn_number >= config.maxTurns:
         result.action = "complete"
+    elif result.action == "complete" and _assistant_expects_learner_reply(result.assistantText):
+        result.action = "continue"
     if not result.providerMetadata.fallbackUsed and turn_number < config.minTurns and result.action == "complete":
         result.action = "continue"
 
     new_turn = ConversationTurnDTO(turnNumber=turn_number, learnerText=input_guardrail.safeText, assistantText=result.assistantText)
     complete = result.action == "complete"
-    _save_context(cache, session.id, state.id, {"turns": [turn.model_dump() for turn in previous_turns + [new_turn]], "complete": complete})
+    payload = {"turns": [turn.model_dump() for turn in previous_turns + [new_turn]], "complete": complete}
+    if opening:
+        payload["opening"] = opening.model_dump()
+    _save_context(cache, session.id, state.id, payload)
     return result, turn_number, complete, input_guardrail
