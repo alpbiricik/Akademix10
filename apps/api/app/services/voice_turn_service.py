@@ -4,6 +4,7 @@ from app.core.config import ELEVENLABS_API_KEY, ELEVENLABS_TTS_LANGUAGE, ELEVENL
 from app.schemas.dtos import (
     SpeechToTextEventDTO,
     TextToSpeechRequestDTO,
+    TextToSpeechResultDTO,
     TrainingSessionDTO,
     TrainingStateDTO,
     VoiceTurnMetricsDTO,
@@ -14,7 +15,6 @@ from app.services.conversation_cache import InMemoryConversationCache, conversat
 from app.services.conversation_errors import ConversationStateError
 from app.services.conversation_provider import ConversationProvider
 from app.services import conversation_service
-from app.services.mock_text_to_speech_provider import MockTextToSpeechProvider, text_fallback_result
 from app.services.text_to_speech_provider import TextToSpeechError, TextToSpeechProvider
 from app.services.elevenlabs_tts_provider import ElevenLabsTextToSpeechProvider
 
@@ -31,16 +31,6 @@ class EmptyTranscriptError(VoiceTurnError):
     code = "empty_transcript"
 
 
-class UnavailableTextToSpeechProvider:
-    provider_name = "unavailable"
-
-    def __init__(self, error_code: str) -> None:
-        self.error_code = error_code
-
-    def synthesize(self, request: TextToSpeechRequestDTO):
-        raise TextToSpeechError(self.error_code)
-
-
 class VoiceTurnOrchestrator:
     def __init__(
         self,
@@ -55,13 +45,43 @@ class VoiceTurnOrchestrator:
         self.conversation_provider = conversation_provider
         self.tts_provider = tts_provider or get_text_to_speech_provider()
         self.cache = cache
+        from app.services.live_avatar_service import avatar_session_store
+        self.avatar_store = avatar_session_store
         self._final_processed = False
         self._stream_started_at = time.perf_counter()
         self.partial_event_count = 0
         self.final_event_count = 0
 
+    def _get_avatar_active(self) -> bool:
+        entry = self.avatar_store.get(self.session.id, self.state.id)
+        return bool(entry and "tokenResponse" in entry)
+
+    def _process_tts_and_avatar(self, text: str) -> tuple[TextToSpeechResultDTO, bool]:
+        avatar_active = self._get_avatar_active()
+        output_format = "pcm_24000" if avatar_active else "mp3_22050_32"
+        try:
+            tts = self.tts_provider.synthesize(TextToSpeechRequestDTO(
+                text=text,
+                language=TTS_LANGUAGE,
+                outputFormat=output_format
+            ))
+            if avatar_active and getattr(tts, "pcmAudioBytes", None):
+                from app.services.live_avatar_service import send_avatar_audio
+                import threading
+                # Stream audio to avatar in background thread so the HTTP
+                # response returns immediately. send_audio now sleeps for
+                # real-time pacing which would otherwise block the response.
+                pcm_bytes = tts.pcmAudioBytes
+                session_copy = self.session
+                state_copy = self.state
+                def _bg_send():
+                    send_avatar_audio(session_copy, state_copy, pcm_bytes)
+                threading.Thread(target=_bg_send, daemon=True).start()
+        except TextToSpeechError:
+            raise
+        return tts, avatar_active
+
     def start_opening(self) -> VoiceOpeningResultDTO:
-        self.ensure_accepting_turn()
         started = time.perf_counter()
         result = conversation_service.start_training_conversation(
             self.session,
@@ -69,11 +89,10 @@ class VoiceTurnOrchestrator:
             provider=self.conversation_provider,
             cache=self.cache,
         )
+
         conversation_ms = int((time.perf_counter() - started) * 1000)
-        try:
-            tts = self.tts_provider.synthesize(TextToSpeechRequestDTO(text=result.assistantText, language=TTS_LANGUAGE))
-        except TextToSpeechError:
-            tts = text_fallback_result(result.assistantText, language=TTS_LANGUAGE, error_code="tts_synthesis_failed")
+        tts, avatar_active = self._process_tts_and_avatar(result.assistantText)
+
         return VoiceOpeningResultDTO(
             stateId=self.state.id,
             assistantText=result.assistantText,
@@ -85,6 +104,7 @@ class VoiceTurnOrchestrator:
                 firstAudioMs=tts.metadata.firstAudioMs,
                 synthesisCompleteMs=tts.metadata.synthesisCompleteMs,
             ),
+            avatarSessionActive=avatar_active,
         )
 
     def handle_partial(self, event: SpeechToTextEventDTO) -> None:
@@ -110,10 +130,8 @@ class VoiceTurnOrchestrator:
             cache=self.cache,
         )
         conversation_ms = int((time.perf_counter() - started) * 1000)
-        try:
-            tts = self.tts_provider.synthesize(TextToSpeechRequestDTO(text=result.assistantText, language=TTS_LANGUAGE))
-        except TextToSpeechError:
-            tts = text_fallback_result(result.assistantText, language=TTS_LANGUAGE, error_code="tts_synthesis_failed")
+        tts, avatar_active = self._process_tts_and_avatar(result.assistantText)
+
         metrics = VoiceTurnMetricsDTO(
             streamStartedAt=None,
             firstPartialMs=event.metadata.firstPartialMs,
@@ -135,6 +153,7 @@ class VoiceTurnOrchestrator:
             sttMetadata=event.metadata,
             tts=tts,
             metrics=metrics,
+            avatarSessionActive=avatar_active,
         )
 
     def ensure_accepting_turn(self) -> None:
@@ -143,14 +162,11 @@ class VoiceTurnOrchestrator:
 
 
 def get_text_to_speech_provider() -> TextToSpeechProvider:
-    if TTS_PROVIDER == "elevenlabs":
-        try:
-            return ElevenLabsTextToSpeechProvider(
-                api_key=ELEVENLABS_API_KEY,
-                voice_id=ELEVENLABS_TTS_VOICE_ID,
-                model=ELEVENLABS_TTS_MODEL,
-                language=ELEVENLABS_TTS_LANGUAGE,
-            )
-        except TextToSpeechError as error:
-            return UnavailableTextToSpeechProvider(getattr(error, "code", "tts_unavailable"))
-    return MockTextToSpeechProvider()
+    if TTS_PROVIDER and TTS_PROVIDER != "elevenlabs":
+        raise TextToSpeechError("TTS_PROVIDER must be elevenlabs.")
+    return ElevenLabsTextToSpeechProvider(
+        api_key=ELEVENLABS_API_KEY,
+        voice_id=ELEVENLABS_TTS_VOICE_ID,
+        model=ELEVENLABS_TTS_MODEL,
+        language=ELEVENLABS_TTS_LANGUAGE,
+    )

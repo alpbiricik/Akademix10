@@ -8,17 +8,16 @@ from app.schemas.dtos import (
     TrainingStateDTO,
 )
 from app.services.conversation_cache import InMemoryConversationCache, conversation_cache
-from app.services.conversation_errors import ConversationStateError
+from app.services.conversation_errors import ConversationProviderConfigurationError, ConversationProviderError, ConversationStateError
 from app.services.conversation_guardrails import evaluate_input_guardrail, fallback_result, validate_output_guardrail
 from app.services.conversation_provider import ConversationProvider, MAX_CONVERSATION_PROVIDER_RETRIES, MAX_CONVERSATION_TURNS
 from app.services.gemini_conversation_provider import GeminiConversationProvider
-from app.services.mock_conversation_provider import MockConversationProvider
 
 
 def get_conversation_provider() -> ConversationProvider:
-    if CONVERSATION_PROVIDER == "gemini":
-        return GeminiConversationProvider(api_key=GEMINI_API_KEY, model=GEMINI_CONVERSATION_MODEL, thinking_level=GEMINI_CONVERSATION_THINKING_LEVEL)
-    return MockConversationProvider()
+    if CONVERSATION_PROVIDER and CONVERSATION_PROVIDER != "gemini":
+        raise ConversationProviderConfigurationError("CONVERSATION_PROVIDER must be gemini.")
+    return GeminiConversationProvider(api_key=GEMINI_API_KEY, model=GEMINI_CONVERSATION_MODEL, thinking_level=GEMINI_CONVERSATION_THINKING_LEVEL)
 
 
 def default_conversation_config(state: TrainingStateDTO) -> ConversationConfigDTO:
@@ -85,6 +84,12 @@ def start_training_conversation(
     provider: ConversationProvider | None = None,
     cache: InMemoryConversationCache = conversation_cache,
 ) -> ConversationResultDTO:
+    # Idempotent opening: return cached result before checking guards
+    # so duplicate calls from React rerenders/StrictMode never get 409
+    context = _load_context(cache, session.id, state.id)
+    if context.get("opening"):
+        return ConversationResultDTO.model_validate(context["opening"])
+
     if state.id in session.completedStateIds:
         raise ConversationStateError("Conversation is already complete for this state.")
     if state.id != session.currentStateId:
@@ -93,11 +98,8 @@ def start_training_conversation(
         raise ConversationStateError("State is not configured for live conversation.")
 
     config = get_state_conversation_config(state)
-    context = _load_context(cache, session.id, state.id)
     if context.get("complete"):
         raise ConversationStateError("Conversation is already complete for this state.")
-    if context.get("opening"):
-        return ConversationResultDTO.model_validate(context["opening"])
 
     active_provider = provider or get_conversation_provider()
     request = ConversationRequestDTO(
@@ -127,8 +129,7 @@ def start_training_conversation(
         except Exception as error:
             last_error = error
     else:
-        result = fallback_result(provider=getattr(active_provider, "provider_name", "conversation"), model="safe-fallback")
-        result.reasonCode = f"opening_retry_exhausted:{type(last_error).__name__ if last_error else 'unknown'}"
+        raise ConversationProviderError(f"Gemini opening retry limit exhausted: {type(last_error).__name__ if last_error else 'unknown'}")
 
     result.action = "continue"
     _save_context(
@@ -208,8 +209,7 @@ def continue_training_conversation(
         except Exception as error:
             last_error = error
     else:
-        result = fallback_result(provider=getattr(active_provider, "provider_name", "conversation"), model="safe-fallback")
-        result.reasonCode = f"retry_exhausted:{type(last_error).__name__ if last_error else 'unknown'}"
+        raise ConversationProviderError(f"Gemini conversation retry limit exhausted: {type(last_error).__name__ if last_error else 'unknown'}")
 
     if result.providerMetadata.fallbackUsed:
         result.action = "complete"

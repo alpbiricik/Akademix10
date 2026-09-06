@@ -13,7 +13,7 @@ export default function PlatformAssignmentsPage() {
           <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
             <p className="text-sm font-semibold uppercase tracking-wide text-teal-700">Training assignment</p>
             <h1 className="mt-2 text-3xl font-semibold">Assign templates to companies</h1>
-            <p className="mt-2 max-w-3xl text-slate-600">Mock platform flow for choosing a training template, selecting a customer company, and previewing enrollment direction.</p>
+            <p className="mt-2 max-w-3xl text-slate-600">Platform flow for choosing a training template, selecting a customer company, and previewing enrollment direction.</p>
           </section>
           <Card className="rounded-lg border-slate-200">
             <CardHeader>

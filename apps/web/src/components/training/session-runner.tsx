@@ -1,25 +1,22 @@
 "use client";
 
-import Link from "next/link";
-import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ArrowLeft, ArrowRight, BadgeDollarSign, Bot, CheckCircle2, Circle, CircleDot, FileText, MessageSquareText, Mic, PlayCircle, RotateCcw, Sparkles, Square } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Clock, ListChecks, Mic, PlayCircle, Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
+import { LiveAvatarView } from "./live-avatar-view";
 import {
-  calculateMockUsage,
   canMoveNext,
   canMovePrevious,
   getCurrentState,
   getSessionProgress,
 } from "@/lib/state-machine/engine";
-import { formatUsd, getStateTypeLabel, getStateTypeTone, isAvatarState, isInteractiveState, sortStatesByOrder } from "@/lib/state-machine/utils";
-import { completeCurrentState, finalizeSession, getSessionBundle, moveToNextState, moveToPreviousState, resetDemoSession, startVoiceOpening, submitConversationTurn, submitSessionAnswer } from "@/lib/adapters/sessionAdapter";
-import { API_BASE_URL, DATA_SOURCE_MODE } from "@/lib/api/config";
+import { isAvatarState, isInteractiveState, sortStatesByOrder } from "@/lib/state-machine/utils";
+import { completeCurrentState, finalizeSession, getSessionBundle, moveToNextState, moveToPreviousState, restartLearnerSession, startVoiceOpening } from "@/lib/adapters/sessionAdapter";
+import { API_BASE_URL } from "@/lib/api/config";
 import { ApiError } from "@/lib/api/errors";
-import type { MockAIFeedback, TrainingModule, TrainingSession, TrainingState, TrainingTemplate } from "@/lib/state-machine/types";
+import type { TrainingModule, TrainingSession, TrainingState } from "@/lib/state-machine/types";
 
 type VoiceStatus = "idle" | "listening" | "processing" | "speaking" | "complete" | "error";
 
@@ -27,17 +24,13 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<TrainingSession | null>(null);
   const [states, setStates] = useState<TrainingState[]>([]);
   const [training, setTraining] = useState<TrainingModule | null>(null);
-  const [template, setTemplate] = useState<TrainingTemplate | null>(null);
-  const [draft, setDraft] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("idle");
-  const [voicePartial, setVoicePartial] = useState("");
-  const [voiceFinal, setVoiceFinal] = useState("");
   const [voiceAssistantText, setVoiceAssistantText] = useState("");
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const submitInFlightRef = useRef(false);
+  const [avatarReady, setAvatarReady] = useState(false);
   const finalizeInFlightRef = useRef(false);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -70,19 +63,16 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     async function load() {
       let bundle = await getSessionBundle(sessionId);
       if (!bundle) {
-        const reset = await resetDemoSession();
-        bundle = await getSessionBundle(reset.id);
+        const restarted = await restartLearnerSession();
+        bundle = await getSessionBundle(restarted.id);
       }
       if (!bundle) return;
-      const { session: loaded, states: loadedStates, module: loadedTraining, template: loadedTemplate } = bundle;
+      const { session: loaded, states: loadedStates, module: loadedTraining } = bundle;
       if (!active) return;
-      setSession(isTrainingSession(loaded) ? { ...loaded, usage: calculateMockUsage(loaded, loadedStates as TrainingState[]) } : null);
+      setSession(isTrainingSession(loaded) ? loaded : null);
       setStates(loadedStates as TrainingState[]);
       setTraining(loadedTraining);
-      setTemplate(loadedTemplate);
-      if (DATA_SOURCE_MODE === "api") {
-        setDrafts(readSessionDrafts(loaded.id));
-      }
+      setDrafts(readSessionDrafts(loaded.id));
     }
     load();
     return () => {
@@ -99,36 +89,38 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
   const sortedStates = useMemo(() => sortStatesByOrder(states), [states]);
   const currentState = session ? getCurrentState(session, sortedStates) : null;
   const progress = session ? getSessionProgress(session, sortedStates) : { completed: 0, total: sortedStates.length, percent: 0 };
-  const currentFeedback = session && currentState ? session.feedback.find((item) => item.stateId === currentState.id) : undefined;
   const currentStateId = currentState?.id;
 
   const applySession = useCallback((next: TrainingSession) => {
-    const withUsage = { ...next, usage: calculateMockUsage(next, sortedStates) };
-    setSession(withUsage);
-  }, [sortedStates]);
+    setSession(next);
+  }, []);
 
   useEffect(() => {
     if (!session || !currentStateId) return;
     queueMicrotask(() => {
-      setDraft(DATA_SOURCE_MODE === "api" ? drafts[currentStateId] ?? "" : session.answers.find((item) => item.stateId === currentStateId)?.answerText ?? "");
       setSubmitError(null);
     });
   }, [currentStateId, drafts, session]);
 
+  const previousStateIdRef = useRef<string | null | undefined>(null);
+
   useEffect(() => {
-    cleanupVoiceTurn();
-    voiceOpeningKeyRef.current = null;
-    queueMicrotask(() => {
-      setVoiceStatus("idle");
-      setVoicePartial("");
-      setVoiceFinal("");
-      setVoiceAssistantText("");
-      setVoiceError(null);
-    });
+    if (previousStateIdRef.current !== currentStateId) {
+      previousStateIdRef.current = currentStateId;
+      cleanupVoiceTurn();
+      voiceOpeningKeyRef.current = null;
+      queueMicrotask(() => {
+        setVoiceStatus("idle");
+        setVoiceAssistantText("");
+        setVoiceError(null);
+        setAvatarReady(false);
+      });
+    }
   }, [cleanupVoiceTurn, currentStateId]);
 
   useEffect(() => {
     if (!session || !currentState || !isAvatarState(currentState)) return;
+    if (!avatarReady) return;
     if (session.completedStateIds.includes(currentState.id)) return;
     const openingKey = `${session.id}:${currentState.id}`;
     if (voiceOpeningKeyRef.current === openingKey) return;
@@ -138,15 +130,17 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
       if (cancelled) return;
       setVoiceStatus("processing");
       setVoiceError(null);
-      setVoicePartial("");
-      setVoiceFinal("");
       setVoiceAssistantText("");
       startVoiceOpening(session.id, currentState.id)
         .then(async (result) => {
           if (cancelled) return;
           setVoiceAssistantText(result.assistantText);
           setVoiceStatus("speaking");
-          await playVoiceAudio(result.tts?.audioPayloadBase64, result.tts?.contentType);
+          if (!result.avatarSessionActive) {
+            await playVoiceAudio(result.tts?.audioPayloadBase64, result.tts?.contentType);
+          } else {
+            await waitForAvatarSpeech(result.assistantText);
+          }
           if (cancelled) return;
           setVoiceStatus(result.conversationComplete ? "complete" : "idle");
           if (result.conversationComplete) {
@@ -155,7 +149,7 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
         })
         .catch(() => {
           if (!cancelled) {
-            setVoiceError("Voice opening failed. Type your response instead.");
+            setVoiceError("AI acilis mesaji baslatilamadi. Yaniti yazarak devam edebilirsin.");
             setVoiceStatus("error");
           }
         });
@@ -163,31 +157,7 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [applySession, currentState, session]);
-
-  async function handleSubmit() {
-    if (!session || !currentState || !draft.trim() || submitInFlightRef.current) return;
-    submitInFlightRef.current = true;
-    setIsSubmitting(true);
-    setSubmitError(null);
-    try {
-      if (DATA_SOURCE_MODE === "api") {
-        const nextDrafts = { ...drafts, [currentState.id]: draft.trim() };
-        setDrafts(nextDrafts);
-        writeSessionDrafts(session.id, nextDrafts);
-        const updated = await completeCurrentState(session.id);
-        if (isTrainingSession(updated)) applySession(updated);
-        return;
-      }
-      const updated = await submitSessionAnswer(session.id, { stateId: currentState.id, answerText: draft.trim() });
-      if (isTrainingSession(updated)) applySession(updated);
-    } catch (error) {
-      setSubmitError(getSubmitErrorMessage(error));
-    } finally {
-      submitInFlightRef.current = false;
-      setIsSubmitting(false);
-    }
-  }
+  }, [applySession, avatarReady, currentState, session]);
 
   async function handleComplete() {
     if (!session) return;
@@ -206,20 +176,6 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     if (!session) return;
     const updated = await moveToPreviousState(session.id);
     if (isTrainingSession(updated)) applySession(updated);
-    setSubmitError(null);
-  }
-
-  async function handleReset() {
-    const reset = await resetDemoSession();
-    const bundle = await getSessionBundle(reset.id);
-    const resetStates = bundle?.states ?? [];
-    setStates(resetStates as TrainingState[]);
-    setSession({ ...reset, usage: calculateMockUsage(reset, resetStates as TrainingState[]) });
-    setTraining(bundle?.module ?? null);
-    setTemplate(bundle?.template ?? null);
-    setDraft("");
-    setDrafts({});
-    clearSessionDrafts(reset.id);
     setSubmitError(null);
   }
 
@@ -289,22 +245,26 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     }
   }
 
+  function waitForAvatarSpeech(text?: string | null) {
+    const characterCount = Math.max((text ?? "").trim().length, 40);
+    const estimatedMs = Math.min(Math.max(Math.round((characterCount / 13) * 1000) + 700, 2200), 18000);
+    return new Promise<void>((resolve) => window.setTimeout(resolve, estimatedMs));
+  }
+
   async function handleStartVoiceTurn() {
     if (!session || !currentState || voiceStartInFlightRef.current || voiceStatus !== "idle") return;
     if (session.completedStateIds.includes(currentState.id)) {
-      setVoiceError("This conversation state is already complete.");
+      setVoiceError("Bu gorusme adimi zaten tamamlandi.");
       setVoiceStatus("error");
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === "undefined") {
-      setVoiceError("Microphone capture is not available in this browser.");
+      setVoiceError("Bu tarayicida mikrofon kaydi kullanilamiyor.");
       setVoiceStatus("error");
       return;
     }
     voiceStartInFlightRef.current = true;
     setVoiceError(null);
-    setVoicePartial("");
-    setVoiceFinal("");
     setVoiceAssistantText("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -313,7 +273,7 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
       voiceSocketRef.current = socket;
       socket.binaryType = "arraybuffer";
       socket.onopen = () => {
-        socket.send(JSON.stringify({ stateId: currentState.id, mockRole: "learner", accessToken: readSupabaseAccessToken() }));
+        socket.send(JSON.stringify({ stateId: currentState.id, accessToken: readSupabaseAccessToken() }));
         const context = new AudioContext();
         const source = context.createMediaStreamSource(stream);
         const processor = context.createScriptProcessor(4096, 1, 1);
@@ -331,17 +291,18 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
         voiceStartInFlightRef.current = false;
       };
       socket.onmessage = (event) => {
-        const payload = JSON.parse(event.data as string) as { type?: string; transcript?: string; result?: { assistantText?: string; conversationComplete?: boolean; tts?: { audioPayloadBase64?: string | null; contentType?: string | null } } ; code?: string };
-        if (payload.type === "partial_transcript") setVoicePartial(payload.transcript ?? "");
+        const payload = JSON.parse(event.data as string) as { type?: string; transcript?: string; result?: { assistantText?: string; conversationComplete?: boolean; avatarSessionActive?: boolean; tts?: { audioPayloadBase64?: string | null; contentType?: string | null } } ; code?: string };
         if (payload.type === "final_transcript" || payload.type === "committed_transcript") {
-          setVoiceFinal(payload.transcript ?? "");
           setVoiceStatus("processing");
           stopAudioCapture();
         }
         if (payload.type === "voice_turn_result" && payload.result) {
           setVoiceAssistantText(payload.result.assistantText ?? "");
           setVoiceStatus("speaking");
-          void playVoiceAudio(payload.result.tts?.audioPayloadBase64, payload.result.tts?.contentType).then(() => {
+          const playback = payload.result.avatarSessionActive
+            ? waitForAvatarSpeech(payload.result.assistantText ?? "")
+            : playVoiceAudio(payload.result.tts?.audioPayloadBase64, payload.result.tts?.contentType);
+          void playback.then(() => {
             setVoiceStatus(payload.result?.conversationComplete ? "complete" : "idle");
           });
           if (payload.result.conversationComplete && session && currentState) {
@@ -355,7 +316,7 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
         }
       };
       socket.onerror = () => {
-        setVoiceError("Voice streaming connection failed. Type your response instead.");
+        setVoiceError("Ses aktarim baglantisi kurulamadı. Yaniti yazarak devam edebilirsin.");
         setVoiceStatus("error");
         cleanupVoiceTurn();
       };
@@ -364,7 +325,7 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
       };
     } catch (error) {
       cleanupVoiceTurn();
-      setVoiceError(error instanceof DOMException && error.name === "NotAllowedError" ? "Microphone permission was denied." : "Microphone could not be started.");
+      setVoiceError(error instanceof DOMException && error.name === "NotAllowedError" ? "Mikrofon izni reddedildi." : "Mikrofon baslatilamadi.");
       setVoiceStatus("error");
     }
   }
@@ -380,125 +341,175 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     }
   }
 
-  async function handleTypedConversationTurn(text: string) {
-    if (!session || !currentState || !text.trim() || submitInFlightRef.current) return;
-    submitInFlightRef.current = true;
-    setVoiceStatus("processing");
-    setVoiceError(null);
-    try {
-      const result = await submitConversationTurn(session.id, { stateId: currentState.id, learnerText: text.trim() });
-      setVoiceFinal(text.trim());
-      setVoiceAssistantText(result.assistantText);
-      if (result.conversationComplete) applySession({ ...session, completedStateIds: Array.from(new Set([...session.completedStateIds, currentState.id])) });
-      setVoiceStatus(result.conversationComplete ? "complete" : "idle");
-    } catch {
-      setVoiceError("Conversation turn failed. Try typing again.");
-      setVoiceStatus("error");
-    } finally {
-      submitInFlightRef.current = false;
-    }
-  }
-
   if (!session || !currentState) {
-    return <Card className="rounded-lg border-slate-200"><CardContent className="p-6 text-sm text-slate-600">Loading session...</CardContent></Card>;
+    return <Card className="rounded-lg border-slate-200"><CardContent className="p-6 text-sm text-slate-600">Egitim yukleniyor...</CardContent></Card>;
   }
 
   return (
-    <div className="space-y-6">
-      <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <div className="mx-auto flex w-full max-w-7xl flex-col px-4 pb-12 sm:px-6">
+      <header className="py-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-wide text-teal-700">{template?.category ?? "Core MVP Engine"}</p>
-            <h1 className="mt-2 text-3xl font-semibold">{training?.title ?? "Demo training session"}</h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{training?.description ?? "Mock AI roleplay session powered by the Phase 2A state machine."}</p>
+          <div className="max-w-3xl">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-teal-700">
+              <span>Canlı eğitim</span>
+              <span className="h-1 w-1 rounded-full bg-slate-300" />
+              <span>{training?.durationMin ?? session.usage.totalDurationMin} min</span>
+            </div>
+            <h1 className="mt-2 text-3xl font-semibold text-slate-950">{training?.title ?? "AkademX10 Training"}</h1>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              {training?.description ?? "Adımları tamamla, AI koçla pratik yap ve final değerlendirmeyi tek seferde başlat."}
+            </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" onClick={handleReset}>
-              <RotateCcw className="h-4 w-4" />
-              Reset Demo Session
-            </Button>
-            <Link href={`/learner/sessions/${session.id}/report`} className="inline-flex h-9 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white px-2.5 text-sm font-medium text-slate-900 shadow-xs transition hover:bg-slate-100">
-              Open Report
-            </Link>
+          <div className="w-full rounded-lg border border-slate-200 bg-white p-4 shadow-sm lg:w-80">
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium text-slate-700">İlerleme</span>
+              <span className="font-semibold text-slate-950">{progress.completed}/{progress.total}</span>
+            </div>
+            <div className="mt-3 h-2 rounded-full bg-slate-100">
+              <div className="h-2 rounded-full bg-teal-600 transition-all" style={{ width: `${progress.percent}%` }} />
+            </div>
+            <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+              <span>%{progress.percent} tamamlandı</span>
+              <span>Finalde AI raporu</span>
+            </div>
           </div>
         </div>
-      </section>
+      </header>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <main className="space-y-6">
+      <main className="grid flex-1 gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+        <LearningPath states={sortedStates} currentStateId={currentState.id} completedStateIds={session.completedStateIds} />
+
+        <section className="space-y-6">
+          {isAvatarState(currentState) ? (
+            <LiveAvatarView
+              sessionId={session.id}
+              stateId={currentState.id}
+              isSpeaking={voiceStatus === "speaking"}
+              isListening={voiceStatus === "listening"}
+              isCompleted={session.completedStateIds.includes(currentState.id) || voiceStatus === "complete"}
+              assistantText={voiceAssistantText}
+              onAvatarReady={() => setAvatarReady(true)}
+              onAvatarError={(error) => {
+                setAvatarReady(false);
+                setVoiceError(error);
+              }}
+            />
+          ) : null}
+
           <Card className="rounded-lg border-slate-200">
-            <CardHeader>
+            <CardHeader className="space-y-4 border-b border-slate-100">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <p className="text-sm font-medium text-slate-500">State {currentState.order} of {sortedStates.length}</p>
-                  <CardTitle className="mt-1 text-2xl">{currentState.title}</CardTitle>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge className={stateModeClass(currentState.type)}>{stateModeLabel(currentState.type)}</Badge>
+                    <Badge variant="secondary">{stateTypeLabel(currentState.type)}</Badge>
+                    <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                      <Clock className="h-3.5 w-3.5" />
+                      {currentState.estimatedMin} min
+                    </span>
+                  </div>
+                  <CardTitle className="mt-3 text-2xl">{currentState.title}</CardTitle>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <Badge className={getStateTypeTone(currentState.type)}>{getStateTypeLabel(currentState.type)}</Badge>
-                  <Badge variant="outline">{currentState.estimatedMin} min</Badge>
-                  {currentState.avatarEnabled ? <Badge className="bg-teal-50 text-teal-800">Avatar-enabled</Badge> : null}
-                </div>
+                <Badge className={session.completedStateIds.includes(currentState.id) ? "bg-emerald-700 text-white" : "bg-slate-950 text-white"}>
+                  Adım {currentState.order} / {sortedStates.length}
+                </Badge>
               </div>
             </CardHeader>
-            <CardContent className="space-y-5">
+            <CardContent className="space-y-6 p-6">
               <DynamicStateContent state={currentState} />
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm leading-6">
-                <p className="font-medium text-slate-950">Rubric</p>
-                <p className="mt-1 text-slate-600">{currentState.rubric}</p>
-                <div className="mt-3 flex flex-wrap gap-2">{currentState.skillTags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>)}</div>
-              </div>
-              {isInteractiveState(currentState) ? (
-                <InteractionBox
-                  state={currentState}
-                  value={draft}
-                  feedback={currentFeedback}
-                  error={submitError}
-                  isSubmitting={isSubmitting}
-                  isBatchMode={DATA_SOURCE_MODE === "api"}
-                  canMoveNext={canMoveNext(session, sortedStates)}
-                  onChange={(value) => {
-                    setDraft(value);
-                    if (submitError) setSubmitError(null);
-                  }}
-                  onSubmit={handleSubmit}
-                  onMoveNext={handleMoveNext}
-                />
-              ) : null}
+
+
               {isAvatarState(currentState) ? (
                 <VoicePocBox
                   status={voiceStatus}
-                  partial={voicePartial}
-                  finalTranscript={voiceFinal}
-                  assistantText={voiceAssistantText}
                   error={voiceError}
                   disabled={session.completedStateIds.includes(currentState.id) || voiceStatus === "complete"}
                   onStart={handleStartVoiceTurn}
                   onStop={handleStopVoiceTurn}
-                  onTypedSubmit={handleTypedConversationTurn}
                 />
               ) : null}
+
+              {submitError ? (
+                <div role="alert" className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-950">
+                  {submitError}
+                </div>
+              ) : null}
+
               <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-5">
-                <Button variant="outline" onClick={handleMovePrevious} disabled={!canMovePrevious(session, sortedStates)}><ArrowLeft className="h-4 w-4" />Previous State</Button>
-                <Button variant="secondary" onClick={handleComplete} disabled={session.completedStateIds.includes(currentState.id)}><CheckCircle2 className="h-4 w-4" />Complete State</Button>
-                <Button onClick={handleMoveNext} disabled={!canMoveNext(session, sortedStates)}>Next State<ArrowRight className="h-4 w-4" /></Button>
-                {DATA_SOURCE_MODE === "api" && currentState.type === "final" ? (
+                <Button variant="outline" onClick={handleMovePrevious} disabled={!canMovePrevious(session, sortedStates)}>
+                  <ArrowLeft className="h-4 w-4" />
+                  Önceki
+                </Button>
+                <Button variant="secondary" onClick={handleComplete} disabled={session.completedStateIds.includes(currentState.id)}>
+                  <CheckCircle2 className="h-4 w-4" />
+                  Tamamla
+                </Button>
+                <Button onClick={handleMoveNext} disabled={!canMoveNext(session, sortedStates)}>
+                  Sonraki
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+                {currentState.type === "final" ? (
                   <Button type="button" onClick={handleFinalize} disabled={isSubmitting}>
                     <Sparkles className="h-4 w-4" />
-                    {isSubmitting ? "Finalizing..." : "Finalize"}
+                    {isSubmitting ? "Tamamlanıyor..." : "Eğitimi Bitir"}
                   </Button>
                 ) : null}
               </div>
             </CardContent>
           </Card>
-        </main>
-        <aside className="space-y-4">
-          <SessionMetrics session={session} progress={progress} />
-          <AvatarCostPanel session={session} />
-          <SkillImpactPanel session={session} />
-          <StateProgressPanel states={sortedStates} session={session} />
-        </aside>
-      </div>
+        </section>
+      </main>
     </div>
+  );
+}
+
+function LearningPath({
+  states,
+  currentStateId,
+  completedStateIds,
+}: {
+  states: TrainingState[];
+  currentStateId: string;
+  completedStateIds: string[];
+}) {
+  return (
+    <aside className="h-fit rounded-lg border border-slate-200 bg-white p-4 shadow-sm lg:sticky lg:top-4">
+      <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+        <ListChecks className="h-4 w-4 text-teal-700" />
+        <p className="font-semibold text-slate-950">Eğitim akışı</p>
+      </div>
+      <div className="mt-4 space-y-2">
+        {states.map((state) => {
+          const complete = completedStateIds.includes(state.id);
+          const current = state.id === currentStateId;
+          return (
+            <div
+              key={state.id}
+              className={`rounded-md border px-3 py-2 ${
+                current
+                  ? "border-teal-300 bg-teal-50"
+                  : complete
+                    ? "border-emerald-200 bg-emerald-50"
+                    : "border-slate-200 bg-white"
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${complete ? "bg-emerald-700 text-white" : current ? "bg-teal-700 text-white" : "bg-slate-100 text-slate-600"}`}>
+                  {complete ? <CheckCircle2 className="h-3.5 w-3.5" /> : state.order}
+                </span>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-slate-950">{state.title}</p>
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${stateModeClass(state.type)}`}>{stateModeLabel(state.type)}</span>
+                    <span className="text-xs text-slate-500">{stateTypeLabel(state.type)} - {state.estimatedMin} min</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </aside>
   );
 }
 
@@ -515,10 +526,6 @@ function readSessionDrafts(sessionId: string): Record<string, string> {
   }
 }
 
-function writeSessionDrafts(sessionId: string, drafts: Record<string, string>) {
-  window.sessionStorage.setItem(draftStorageKey(sessionId), JSON.stringify(drafts));
-}
-
 function clearSessionDrafts(sessionId: string) {
   window.sessionStorage.removeItem(draftStorageKey(sessionId));
 }
@@ -533,147 +540,85 @@ function getFinalizeKey(sessionId: string) {
 }
 
 function DynamicStateContent({ state }: { state: TrainingState }) {
-  if (state.type === "video") return <StateShell icon={<PlayCircle className="h-10 w-10 text-teal-300" />} title="Training content" text={state.prompt} dark />;
-  if (state.type === "avatar") return <StateShell icon={<Bot className="h-6 w-6 text-teal-700" />} title="LiveAvatar Lite active" text={state.prompt} tone="teal" />;
-  if (state.type === "roleplay") return <StateShell title="Roleplay scenario" text={state.prompt} tone="amber" />;
-  if (state.type === "reflection") return <StateShell title="Reflection prompt" text={state.prompt} tone="violet" />;
-  if (state.type === "feedback") return <StateShell icon={<MessageSquareText className="h-5 w-5 text-emerald-700" />} title="Feedback checkpoint" text={state.prompt} tone="emerald" />;
-  if (state.type === "final") return <StateShell icon={<FileText className="h-5 w-5 text-teal-300" />} title="Final summary" text={state.prompt} dark />;
-  return <StateShell icon={<Sparkles className="h-5 w-5 text-teal-700" />} title="Welcome to the guided session" text={state.prompt} />;
+  if (state.type === "video" || state.type === "final") return <VideoStateContent />;
+  return null;
 }
 
-function StateShell({ icon, title, text, tone, dark }: { icon?: ReactNode; title: string; text: string; tone?: "teal" | "amber" | "violet" | "emerald"; dark?: boolean }) {
-  const toneClass = tone === "teal" ? "border-teal-200 bg-teal-50 text-teal-950" : tone === "amber" ? "border-amber-200 bg-amber-50 text-amber-950" : tone === "violet" ? "border-violet-200 bg-violet-50 text-violet-950" : tone === "emerald" ? "border-emerald-200 bg-emerald-50 text-emerald-950" : "border-slate-200 bg-white text-slate-950";
+function VideoStateContent() {
   return (
-    <div className={`rounded-lg border p-5 ${dark ? "border-slate-200 bg-slate-950 text-white" : toneClass}`}>
-      <div className="flex items-start gap-3">
-        {icon}
-        <div>
-          <p className="font-semibold">{title}</p>
-          <p className={`mt-2 text-sm leading-6 ${dark ? "text-slate-300" : ""}`}>{text}</p>
+    <div className="aspect-video overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
+      <div className="flex h-full items-center justify-center">
+        <div className="flex h-16 w-16 items-center justify-center rounded-full border border-white/20 bg-white/10">
+          <PlayCircle className="h-8 w-8 text-white/80" />
         </div>
+      </div>
+      <div className="flex h-10 items-center gap-3 border-t border-white/10 bg-black/30 px-4">
+        <div className="h-1.5 flex-1 rounded-full bg-white/15" />
+        <div className="h-1.5 w-10 rounded-full bg-white/15" />
       </div>
     </div>
   );
 }
 
-function InteractionBox({
-  state,
-  value,
-  feedback,
-  error,
-  isSubmitting,
-  isBatchMode,
-  canMoveNext,
-  onChange,
-  onSubmit,
-  onMoveNext,
-}: {
-  state: TrainingState;
-  value: string;
-  feedback?: MockAIFeedback;
-  error: string | null;
-  isSubmitting: boolean;
-  isBatchMode: boolean;
-  canMoveNext: boolean;
-  onChange: (value: string) => void;
-  onSubmit: () => void;
-  onMoveNext: () => void;
-}) {
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4">
-      <p className="font-medium text-slate-950">Your response</p>
-      <Textarea className="mt-3 min-h-32" value={value} onChange={(event) => onChange(event.target.value)} placeholder={`Type your ${state.type} response here...`} />
-      {error ? (
-        <div role="alert" className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-950">
-          <p>{error}</p>
-          {canMoveNext ? (
-            <Button type="button" variant="outline" className="mt-3" onClick={onMoveNext}>
-              Continue to next state
-              <ArrowRight className="h-4 w-4" />
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-      <div className="mt-3 flex justify-end">
-        <Button type="button" onClick={onSubmit} disabled={!value.trim() || isSubmitting}>
-          <Sparkles className="h-4 w-4" />
-          {isSubmitting ? "Saving..." : isBatchMode ? "Save answer" : "Submit for AI Feedback"}
-        </Button>
-      </div>
-      {feedback ? <FeedbackCard feedback={feedback} /> : null}
-    </div>
-  );
+function stateTypeLabel(type: TrainingState["type"]) {
+  const labels: Record<TrainingState["type"], string> = {
+    intro: "Tanıtım",
+    video: "Eğitim",
+    avatar: "Avatar",
+    live_avatar: "Avatar",
+    question: "Yazılı pratik",
+    roleplay: "Vaka / Roleplay",
+    reflection: "Aksiyon listesi",
+    feedback: "Geri bildirim",
+    final: "Kapanış",
+  };
+  return labels[type];
+}
+
+function stateModeLabel(type: TrainingState["type"]) {
+  return type === "video" || type === "intro" || type === "final" ? "Video" : "AI";
+}
+
+function stateModeClass(type: TrainingState["type"]) {
+  return stateModeLabel(type) === "Video"
+    ? "bg-orange-500 text-white hover:bg-orange-500"
+    : "bg-violet-700 text-white hover:bg-violet-700";
 }
 
 function VoicePocBox({
   status,
-  partial,
-  finalTranscript,
-  assistantText,
   error,
   disabled,
   onStart,
   onStop,
-  onTypedSubmit,
 }: {
   status: VoiceStatus;
-  partial: string;
-  finalTranscript: string;
-  assistantText: string;
   error: string | null;
   disabled: boolean;
   onStart: () => void;
   onStop: () => void;
-  onTypedSubmit: (text: string) => void;
 }) {
-  const [typed, setTyped] = useState("");
-  const busy = status === "listening" || status === "processing" || status === "speaking";
-  const statusText = status === "listening" ? "Listening" : status === "processing" ? "Processing" : status === "speaking" ? "Speaking" : disabled || status === "complete" ? "Conversation complete" : "Ready";
+  const isListening = status === "listening";
+  const isWaiting = status === "processing" || status === "speaking";
+  const label = isListening ? "Konusmayi bitir" : "Mikrofonu ac";
+  const hint = error ?? (status === "speaking" ? "Avatar konusurken mikrofon kapali" : status === "processing" ? "Ses isleniyor" : disabled || status === "complete" ? "Gorusme tamamlandi" : label);
+
   return (
-    <div className="rounded-lg border border-teal-200 bg-teal-50 p-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="font-medium text-teal-950">Voice turn</p>
-          <p className="text-sm text-teal-800">{statusText}</p>
-        </div>
-        <div className="flex gap-2">
-          <Button type="button" onClick={onStart} disabled={busy || disabled}>
-            <Mic className="h-4 w-4" />
-            Start
-          </Button>
-          <Button type="button" variant="outline" onClick={onStop} disabled={!busy}>
-            <Square className="h-4 w-4" />
-            Stop
-          </Button>
-        </div>
-      </div>
-      {partial ? <p className="mt-3 rounded-md bg-white px-3 py-2 text-sm text-slate-600">Partial: {partial}</p> : null}
-      {finalTranscript ? <p className="mt-3 rounded-md bg-white px-3 py-2 text-sm font-medium text-slate-900">Final: {finalTranscript}</p> : null}
-      {assistantText ? <p className="mt-3 rounded-md border border-teal-200 bg-white px-3 py-2 text-sm leading-6 text-teal-950">{assistantText}</p> : null}
-      {error ? (
-        <div role="alert" className="mt-3 flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          <p>{error}</p>
-        </div>
-      ) : null}
-      <div className="mt-4 border-t border-teal-200 pt-4">
-        <Textarea value={typed} onChange={(event) => setTyped(event.target.value)} placeholder="Type the same turn if microphone or STT is unavailable..." className="min-h-24 bg-white" />
-        <div className="mt-2 flex justify-end">
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={!typed.trim() || busy || disabled}
-            onClick={() => {
-              onTypedSubmit(typed);
-              setTyped("");
-            }}
-          >
-            <Sparkles className="h-4 w-4" />
-            Send typed turn
-          </Button>
-        </div>
-      </div>
+    <div className="flex justify-center py-5">
+      <Button
+        type="button"
+        aria-label={label}
+        title={hint}
+        onClick={isListening ? onStop : onStart}
+        disabled={disabled || isWaiting}
+        className={`h-20 w-20 rounded-full p-0 shadow-lg transition ${
+          isListening
+            ? "bg-red-600 text-white shadow-red-200 hover:bg-red-700"
+            : "bg-sky-500 text-white shadow-sky-200 hover:bg-sky-600"
+        } disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none`}
+      >
+        <Mic className="h-10 w-10" />
+      </Button>
     </div>
   );
 }
@@ -688,10 +633,10 @@ function readSupabaseAccessToken() {
 }
 
 function voiceErrorMessage(code?: string) {
-  if (code === "stt_provider_not_configured") return "Speech recognition is not configured. Type your response instead.";
-  if (code === "empty_transcript") return "No clear speech was detected. Try again or type your response.";
-  if (code === "session_not_found" || code === "state_not_found") return "This voice turn is no longer available.";
-  return "Voice turn failed. Type your response instead.";
+  if (code === "stt_provider_not_configured") return "Ses tanima servisi yapilandirilmamis. Yaniti yazarak devam edebilirsin.";
+  if (code === "empty_transcript") return "Net bir konusma algilanamadi. Tekrar dene veya yanitini yaz.";
+  if (code === "session_not_found" || code === "state_not_found") return "Bu sesli gorusme artik kullanilamiyor.";
+  return "Sesli gorusme tamamlanamadi. Yaniti yazarak devam edebilirsin.";
 }
 
 function floatToPcm16(input: Float32Array, sourceRate: number, targetRate: number) {
@@ -710,12 +655,12 @@ function getSubmitErrorMessage(error: unknown) {
   if (error instanceof ApiError) {
     const code = extractApiErrorCode(error.payload);
     if (error.status === 429 || code === "max_queries_per_state") {
-      return "This state has reached its AI feedback limit. Your answer is still here. Continue to the next state or reset the demo session for a clean validation run.";
+      return "Bu adım AI geri bildirim limitine ulaştı. Yanıtın silinmedi; sonraki adıma geçebilir veya eğitimi baştan başlatabilirsin.";
     }
-    if (error.status === 422) return "This answer cannot be scored yet. Check the response and submit again.";
-    if (error.status === 0) return "The scoring service could not be reached.";
+    if (error.status === 422) return "Bu yanit henuz degerlendirilemiyor. Yaniti kontrol edip tekrar gonder.";
+    if (error.status === 0) return "Degerlendirme servisine ulasilamadi.";
   }
-  return "The answer could not be submitted. Your text was not cleared.";
+  return "Yanit gonderilemedi. Yazdigin metin silinmedi.";
 }
 
 function extractApiErrorCode(payload: unknown) {
@@ -724,65 +669,6 @@ function extractApiErrorCode(payload: unknown) {
   if (!detail || typeof detail !== "object" || !("code" in detail)) return null;
   const code = (detail as { code?: unknown }).code;
   return typeof code === "string" ? code : null;
-}
-
-function FeedbackCard({ feedback }: { feedback: MockAIFeedback }) {
-  return (
-    <div className="mt-4 rounded-lg border border-teal-200 bg-teal-50 p-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <p className="font-semibold text-teal-950">AI feedback</p>
-        <Badge className="bg-teal-700 text-white">Overall {feedback.overallScore}/100</Badge>
-      </div>
-      <div className="mt-4 grid gap-2 sm:grid-cols-2">
-        {feedback.dimensions.map((dimension) => <div key={dimension.label} className="rounded-md bg-white px-3 py-2 text-sm"><div className="flex justify-between gap-3"><span className="text-slate-600">{dimension.label}</span><span className="font-semibold text-slate-950">{dimension.score}/100</span></div></div>)}
-      </div>
-      <p className="mt-4 text-sm leading-6 text-teal-950">{feedback.feedbackText}</p>
-      <p className="mt-2 text-sm leading-6 text-teal-900"><span className="font-semibold">Improve:</span> {feedback.improvementSuggestion}</p>
-      <p className="mt-2 text-sm leading-6 text-teal-900"><span className="font-semibold">Next action:</span> {feedback.nextAction}</p>
-    </div>
-  );
-}
-
-function StateProgressPanel({ states, session }: { states: TrainingState[]; session: TrainingSession }) {
-  return (
-    <Card className="rounded-lg border-slate-200">
-      <CardHeader><CardTitle>21-state progress</CardTitle></CardHeader>
-      <CardContent className="max-h-[640px] space-y-2 overflow-y-auto pr-1">
-        {states.map((item) => {
-          const isCurrent = item.id === session.currentStateId;
-          const isCompleted = session.completedStateIds.includes(item.id);
-          const Icon = isCompleted ? CheckCircle2 : isCurrent ? CircleDot : Circle;
-          return (
-            <div key={item.id} className={`w-full rounded-md border p-3 text-left transition ${isCurrent ? "border-teal-500 bg-teal-50" : isCompleted ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-white"}`}>
-              <div className="flex items-start gap-3">
-                <Icon className={`mt-0.5 h-4 w-4 ${isCompleted ? "text-emerald-700" : isCurrent ? "text-teal-700" : "text-slate-400"}`} />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{item.order}. {item.title}</p>
-                  <div className="mt-2 flex flex-wrap gap-2"><Badge className={getStateTypeTone(item.type)}>{item.type}</Badge>{item.avatarEnabled ? <Bot className="h-4 w-4 shrink-0 text-teal-700" /> : null}</div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </CardContent>
-    </Card>
-  );
-}
-
-function SessionMetrics({ session, progress }: { session: TrainingSession; progress: { completed: number; total: number; percent: number } }) {
-  return <Card className="rounded-lg border-slate-200"><CardHeader><CardTitle>Session metrics</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><MetricRow label="Total session" value={`${session.usage.totalDurationMin} min`} /><MetricRow label="States" value={`${progress.total}`} /><MetricRow label="Completed" value={`${progress.completed} (${progress.percent}%)`} /><MetricRow label="Status" value={session.status} /></CardContent></Card>;
-}
-
-function AvatarCostPanel({ session }: { session: TrainingSession }) {
-  return <Card className="rounded-lg border-slate-200"><CardHeader><div className="flex items-center gap-2"><BadgeDollarSign className="h-5 w-5 text-teal-700" /><CardTitle>Avatar usage and cost</CardTitle></div></CardHeader><CardContent className="space-y-3 text-sm"><MetricRow label="Mode" value="LiveAvatar Lite" /><MetricRow label="Avatar target" value={`${session.usage.avatarTargetMin} min`} /><MetricRow label="Current avatar used" value={`${session.usage.avatarUsedMin.toFixed(2)} min`} /><MetricRow label="Current avatar opens" value={`${session.usage.avatarOpenCount}`} /><MetricRow label="Buffered avatar target" value={`${session.usage.bufferedAvatarMin} min`} /><MetricRow label="Estimated avatar cost" value={formatUsd(session.usage.estimatedAvatarCostUsd)} /><MetricRow label="Safe budget" value={formatUsd(session.usage.safeBudgetUsd)} /></CardContent></Card>;
-}
-
-function SkillImpactPanel({ session }: { session: TrainingSession }) {
-  return <Card className="rounded-lg border-slate-200"><CardHeader><CardTitle>Skill impact</CardTitle></CardHeader><CardContent className="space-y-3">{session.skillScores.map((score) => <div key={score.skill} className="space-y-1"><div className="flex justify-between gap-3 text-sm"><span className="font-medium text-slate-700">{score.skill}</span><span className="text-slate-500">{score.score}/100 (+{score.delta})</span></div><div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-teal-600 transition-all" style={{ width: `${score.score}%` }} /></div></div>)}</CardContent></Card>;
-}
-
-function MetricRow({ label, value }: { label: string; value: string }) {
-  return <div className="flex items-center justify-between gap-3 rounded-md bg-slate-50 px-3 py-2"><span className="text-slate-600">{label}</span><span className="font-medium text-slate-950">{value}</span></div>;
 }
 
 function isTrainingSession(value: unknown): value is TrainingSession {

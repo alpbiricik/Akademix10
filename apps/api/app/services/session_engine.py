@@ -46,36 +46,6 @@ def submit_answer(session: TrainingSessionDTO, state_id: str, answer_text: str) 
     return session
 
 
-def generate_mock_feedback(state: TrainingStateDTO, answer_text: str) -> SessionFeedbackDTO:
-    base = min(94, 74 + (6 if len(answer_text) > 120 else 3) + (state.order % 5))
-    return SessionFeedbackDTO(
-        id=f"feedback-{state.id}",
-        stateId=state.id,
-        overallScore=base,
-        dimensions=[
-            FeedbackDimensionDTO(label="Clarity", score=min(100, base + 2)),
-            FeedbackDimensionDTO(label="Empathy", score=min(100, base + 1)),
-            FeedbackDimensionDTO(label="Structure", score=max(0, base - 3)),
-            FeedbackDimensionDTO(label="Confidence", score=min(100, base + 3)),
-        ],
-        feedbackText="Mock feedback: strong response with a clear next step.",
-        improvementSuggestion="Make the business outcome more explicit.",
-        nextAction="Ask one discovery question before recommending.",
-        createdAt=now_iso(),
-    )
-
-
-def apply_mock_skill_impact(session: TrainingSessionDTO, feedback: SessionFeedbackDTO) -> TrainingSessionDTO:
-    session.feedback = [item for item in session.feedback if item.stateId != feedback.stateId]
-    session.feedback.append(feedback)
-    session.skillScores = [
-        SkillScoreDTO(skill=score.skill, score=min(100, score.score + 2), delta=score.delta + 2)
-        for score in session.skillScores
-    ]
-    session.updatedAt = now_iso()
-    return session
-
-
 def feedback_from_scoring_result(result: StructuredScoringResultDTO) -> SessionFeedbackDTO:
     return SessionFeedbackDTO(
         id=f"feedback-{result.stateId}",

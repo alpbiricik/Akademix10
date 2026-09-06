@@ -16,21 +16,21 @@ class ElevenLabsTTSConfigurationError(TextToSpeechError):
 class ElevenLabsTextToSpeechProvider:
     provider_name = "elevenlabs"
 
-    def __init__(self, api_key: str, voice_id: str, model: str = "eleven_flash_v2_5", language: str = "tr") -> None:
+    def __init__(self, api_key: str, voice_id: str = "", model: str = "eleven_flash_v2_5", language: str = "tr") -> None:
         if not api_key:
             raise ElevenLabsTTSConfigurationError("ElevenLabs TTS requires a server-side API key.")
-        if not voice_id:
-            raise ElevenLabsTTSConfigurationError("ElevenLabs TTS requires ELEVENLABS_TTS_VOICE_ID.")
         self._api_key = api_key
-        self.voice_id = voice_id
-        self.model = model
-        self.language = language
+        self.voice_id = voice_id or "21m00Tcm4TlvDq8ikWAM"
+        self.model = model or "eleven_flash_v2_5"
+        self.language = language or "tr"
+
 
     def synthesize(self, request: TextToSpeechRequestDTO) -> TextToSpeechResultDTO:
         started = time.perf_counter()
         first_audio_ms: int | None = None
         chunks: list[bytes] = []
-        query = urllib.parse.urlencode({"output_format": "mp3_22050_32", "language_code": self.language})
+        format_param = request.outputFormat or "mp3_22050_32"
+        query = urllib.parse.urlencode({"output_format": format_param, "language_code": self.language})
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{urllib.parse.quote(self.voice_id)}/stream?{query}"
         http_request = urllib.request.Request(
             url,
@@ -52,9 +52,14 @@ class ElevenLabsTextToSpeechProvider:
         total_ms = int((time.perf_counter() - started) * 1000)
         if not chunks:
             raise TextToSpeechError("ElevenLabs TTS returned no audio.")
+
+        full_audio = b"".join(chunks)
+        is_pcm = format_param.startswith("pcm_")
+
         return TextToSpeechResultDTO(
-            audioPayloadBase64=base64.b64encode(b"".join(chunks)).decode("ascii"),
-            contentType="audio/mpeg",
+            audioPayloadBase64=None if is_pcm else base64.b64encode(full_audio).decode("ascii"),
+            contentType=None if is_pcm else "audio/mpeg",
+            pcmAudioBytes=full_audio if is_pcm else None,
             textFallback=request.text,
             metadata=TextToSpeechMetadataDTO(
                 provider=self.provider_name,

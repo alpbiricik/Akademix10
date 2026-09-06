@@ -4,27 +4,22 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LogIn, Menu, PlayCircle, X } from "lucide-react";
 import { getRoleNavigationItems } from "@/components/layout/navigation-items";
-import { DATA_SOURCE_MODE } from "@/lib/api/config";
-import { MOCK_USER_STORAGE_KEY, parseMockUser, roleDestinations, roleLabels, type MockUserSession } from "@/lib/mock-auth";
+import { roleDestinations, roleLabels, type AuthenticatedUser } from "@/lib/auth-types";
 import { clearStoredSession, getTrustedProfile } from "@/lib/supabase-auth";
 
 export function Topbar() {
-  const [user, setUser] = useState<MockUserSession | null>(null);
+  const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     queueMicrotask(() => {
-      if (DATA_SOURCE_MODE === "mock") {
-        setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
-        return;
-      }
       getTrustedProfile().then(setUser).catch(() => setUser(null));
     });
   }, []);
 
   function handleLoginClick() {
-    if (DATA_SOURCE_MODE === "api") clearStoredSession();
+    if (user) clearStoredSession();
   }
 
   const navItems = useMemo(() => getRoleNavigationItems(user), [user]);
@@ -85,19 +80,20 @@ export function Topbar() {
             </span>
           ) : null}
           {user?.role === "learner" ? (
-            <Link href="/learner/session/demo-session-1" className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-md border border-white/15 bg-white/10 px-2.5 text-sm font-medium text-white shadow-xs transition hover:bg-white/15">
+            <Link href="/learner/session/active" className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-md border border-white/15 bg-white/10 px-2.5 text-sm font-medium text-white shadow-xs transition hover:bg-white/15">
               <PlayCircle className="h-4 w-4" />
-              <span className="hidden sm:inline">Demo Session</span>
+              <span className="hidden sm:inline">Training Session</span>
             </Link>
           ) : (
+
             <Link href={user ? roleDestinations[user.role] : "/login"} className="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-white/15 bg-white/10 px-2.5 text-sm font-medium text-white shadow-xs transition hover:bg-white/15">
-              <span className="hidden sm:inline">{user ? "Workspace" : "Choose Role"}</span>
-              <span className="sm:hidden">{user ? "Home" : "Role"}</span>
+              <span className="hidden sm:inline">{user ? "Workspace" : "Login"}</span>
+              <span className="sm:hidden">{user ? "Home" : "Login"}</span>
             </Link>
           )}
           <Link href="/login" onClick={handleLoginClick} className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-md bg-[#18c5b5] px-2.5 text-sm font-medium text-[#102b3f] transition hover:bg-[#35d6c6]">
             <LogIn className="h-4 w-4" />
-            <span className="hidden sm:inline">{user && DATA_SOURCE_MODE === "api" ? "Logout" : "Login"}</span>
+            <span className="hidden sm:inline">{user ? "Logout" : "Login"}</span>
           </Link>
         </div>
         {menuOpen ? (

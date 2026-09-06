@@ -38,7 +38,7 @@ export function ApiSmokeClient() {
             <div>
               <h1 className="text-3xl font-semibold">Developer API Smoke Test</h1>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                Runs frontend adapter calls against the FastAPI mock backend when API mode is enabled.
+                Runs frontend adapter calls against the FastAPI backend and Supabase-backed runtime.
               </p>
             </div>
             <Button type="button" onClick={runSmokeTest} disabled={loading} className="bg-slate-950 text-white hover:bg-slate-800">

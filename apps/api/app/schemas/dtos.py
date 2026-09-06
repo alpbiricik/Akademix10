@@ -236,6 +236,9 @@ class ConversationTurnResponseDTO(BaseModel):
     conversationComplete: bool
     guardrail: ConversationGuardrailResultDTO
     providerMetadata: ProviderMetadataDTO
+    tts: TextToSpeechResultDTO | None = None
+    avatarSessionActive: bool = False
+
 
 
 class SpeechToTextMetadataDTO(BaseModel):
@@ -271,12 +274,14 @@ class TextToSpeechMetadataDTO(BaseModel):
 class TextToSpeechRequestDTO(BaseModel):
     text: str
     language: str = "tr"
-    voice: str = "mock-tr"
+    voice: str = "tr"
+    outputFormat: str = "mp3_22050_32"
 
 
 class TextToSpeechResultDTO(BaseModel):
     audioPayloadBase64: str | None = None
     contentType: str | None = None
+    pcmAudioBytes: bytes | None = Field(default=None, exclude=True)
     textFallback: str
     metadata: TextToSpeechMetadataDTO
 
@@ -303,6 +308,7 @@ class VoiceTurnResultDTO(BaseModel):
     sttMetadata: SpeechToTextMetadataDTO
     tts: TextToSpeechResultDTO
     metrics: VoiceTurnMetricsDTO
+    avatarSessionActive: bool = False
 
 
 class VoiceOpeningResultDTO(BaseModel):
@@ -312,9 +318,41 @@ class VoiceOpeningResultDTO(BaseModel):
     conversationProviderMetadata: ProviderMetadataDTO
     tts: TextToSpeechResultDTO
     metrics: VoiceTurnMetricsDTO
+    avatarSessionActive: bool = False
+
+
+class LiveAvatarSessionTokenRequestDTO(BaseModel):
+    stateId: str
+
+
+class LiveAvatarSessionTokenResponseDTO(BaseModel):
+    provider: str
+    sessionToken: str | None = None
+    avatarId: str | None = None
+    voiceId: str | None = None
+    quality: str = "medium"
+    sessionTimeoutSec: int = 600
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LiveAvatarSessionActionRequestDTO(BaseModel):
+    stateId: str
+    avatarSessionId: str | None = None
+    action: Literal["start", "stop", "speak"]
+    text: str | None = None
+
+
+class LiveAvatarSessionActionResponseDTO(BaseModel):
+    status: Literal["created", "started", "stopped", "speaking", "fallback"]
+    stateId: str
+    avatarSessionId: str | None = None
+    activeSeconds: float = 0.0
+    errorMessage: str | None = None
+    providerMetadata: ProviderMetadataDTO | None = None
 
 
 class TokenCostMetadataDTO(BaseModel):
+
     inputTokens: int = 0
     outputTokens: int = 0
     estimatedCostUsd: float = 0

@@ -1,4 +1,5 @@
-import type { TrainingState, TrainingStateType, UserRole } from "@/lib/state-machine/types";
+import type { UserRole } from "@/lib/auth-types";
+import type { TrainingState, TrainingStateType } from "@/lib/state-machine/types";
 
 export function sortStatesByOrder(states: TrainingState[]) {
   return [...states].sort((a, b) => a.order - b.order);
@@ -11,14 +12,6 @@ export function getProgressPercent(completed: number, total: number) {
 
 export function formatDuration(minutes: number) {
   return `${minutes} min`;
-}
-
-export function formatUsd(value: number) {
-  return new Intl.NumberFormat("tr-TR", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  }).format(value);
 }
 
 export function getStateTypeLabel(type: TrainingStateType) {
@@ -56,8 +49,9 @@ export function isInteractiveState(state: TrainingState) {
 }
 
 export function isAvatarState(state: TrainingState) {
-  return state.avatarEnabled || state.type === "avatar" || state.type === "live_avatar";
+  return Boolean(state.avatarEnabled || state.type === "avatar" || state.type === "live_avatar" || state.type === "roleplay");
 }
+
 
 export function clampScore(score: number) {
   return Math.max(0, Math.min(100, Math.round(score)));
@@ -68,3 +62,5 @@ export function getRoleLabel(role: UserRole) {
   if (role === "company") return "Company / HR Manager";
   return "Learner / Employee";
 }
+
+export function formatUsd(val: number) { return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val); }

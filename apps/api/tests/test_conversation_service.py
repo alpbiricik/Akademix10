@@ -6,12 +6,13 @@ from unittest.mock import patch
 from app.core.auth import Principal
 from app.routers.learner import post_conversation_turn
 from app.schemas.dtos import ConversationResultDTO, ConversationTurnRequestDTO, ProviderMetadataDTO
-from app.services import conversation_service, mock_store, scoring_repository
+from app.services import conversation_service, scoring_repository
 from app.services.conversation_cache import InMemoryConversationCache
-from app.services.conversation_errors import ConversationStateError
+from app.services.conversation_errors import ConversationProviderError, ConversationStateError
 from app.services.conversation_guardrails import evaluate_input_guardrail, validate_output_guardrail
 from app.services.gemini_conversation_provider import GeminiConversationProvider
-from app.services.mock_conversation_provider import MockConversationProvider
+from tests.fakes import mock_store
+from tests.fakes.providers import DeterministicConversationProvider as MockConversationProvider
 
 
 class BadActionProvider:
@@ -106,7 +107,7 @@ def assert_turkish_text(testcase: unittest.TestCase, text: str) -> None:
 
 class ConversationServiceTests(unittest.TestCase):
     def setUp(self):
-        scoring_repository.reset_mock_scoring_store()
+        scoring_repository.reset_scoring_store()
         self.cache = InMemoryConversationCache()
         self.session = deepcopy(mock_store.demo_session)
         self.state = deepcopy(next(state for state in mock_store.training_states if state.type == "roleplay"))
@@ -277,7 +278,7 @@ class ConversationServiceTests(unittest.TestCase):
                 config,
             )
 
-    def test_bounded_retry_allows_later_valid_output_and_fallback_after_retry_limit(self):
+    def test_bounded_retry_allows_later_valid_output_and_raises_after_retry_limit(self):
         result, _, _, _ = conversation_service.continue_training_conversation(
             self.session,
             self.state,
@@ -286,15 +287,14 @@ class ConversationServiceTests(unittest.TestCase):
             cache=self.cache,
         )
         self.assertEqual(result.providerMetadata.attemptCount, 2)
-        fallback, _, _, _ = conversation_service.continue_training_conversation(
-            self.session,
-            self.state,
-            "I would ask the renewal customer about value and next steps.",
-            provider=AlwaysLeakyProvider(),
-            cache=InMemoryConversationCache(),
-        )
-        self.assertTrue(fallback.providerMetadata.fallbackUsed)
-        self.assertEqual(fallback.action, "complete")
+        with self.assertRaises(ConversationProviderError):
+            conversation_service.continue_training_conversation(
+                self.session,
+                self.state,
+                "I would ask the renewal customer about value and next steps.",
+                provider=AlwaysLeakyProvider(),
+                cache=InMemoryConversationCache(),
+            )
 
     def test_scoring_isolation_for_conversation_turn(self):
         state_id = self.state.id
@@ -369,6 +369,7 @@ class ConversationServiceTests(unittest.TestCase):
         overridden = GeminiConversationProvider(api_key="unit-test-key", model="gemini-3.5-flash-lite", thinking_level="medium")
         self.assertEqual(overridden._build_payload(request)["generationConfig"]["thinkingConfig"]["thinkingLevel"], "medium")
 
+    @unittest.skip("Legacy runtime-mock endpoint authorization is obsolete after Supabase JWT cleanup.")
     def test_mock_endpoint_denies_wrong_learner_and_does_not_persist_raw_answer(self):
         session = deepcopy(self.session)
         mock_store.sessions["conversation-auth-test"] = session

@@ -2,14 +2,16 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { MOCK_USER_STORAGE_KEY, parseMockUser, roleDestinations } from "@/lib/mock-auth";
+import { roleDestinations } from "@/lib/auth-types";
+import { getTrustedProfile } from "@/lib/supabase-auth";
 
 export function LegacyRouteRedirect({ fallback = "/login" }: { fallback?: string }) {
   const router = useRouter();
 
   useEffect(() => {
-    const user = parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY));
-    router.replace(user ? roleDestinations[user.role] : fallback);
+    getTrustedProfile()
+      .then((user) => router.replace(roleDestinations[user.role]))
+      .catch(() => router.replace(fallback));
   }, [fallback, router]);
 
   return null;

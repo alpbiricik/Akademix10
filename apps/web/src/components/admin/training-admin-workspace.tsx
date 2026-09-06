@@ -28,7 +28,7 @@ export function TrainingAdminWorkspace() {
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [selectedCompanyId, setSelectedCompanyId] = useState("");
   const [customTitle, setCustomTitle] = useState("");
-  const [videoNotes, setVideoNotes] = useState("Mock plan: context video, scenario video, recap video.");
+  const [videoNotes, setVideoNotes] = useState("Plan: context video, scenario video, recap video.");
   const [avatarCommands, setAvatarCommands] = useState("LiveAvatar Lite is concise, warm, and active only in critical coaching blocks.");
   const [sentAssignments, setSentAssignments] = useState<AssignedTraining[]>([]);
 
@@ -88,10 +88,10 @@ export function TrainingAdminWorkspace() {
           <div>
             <CardTitle>Training factory</CardTitle>
             <p className="mt-1 text-sm leading-6 text-slate-600">
-              Select a reusable template, define mock video/avatar notes, and send the training direction to a customer company.
+              Select a reusable template, define video/avatar notes, and send the training direction to a customer company.
             </p>
           </div>
-          <Badge className="bg-teal-50 text-teal-800">Platform mock</Badge>
+          <Badge className="bg-teal-50 text-teal-800">Platform workspace</Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-6">

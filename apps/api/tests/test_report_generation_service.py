@@ -9,8 +9,9 @@ from app.schemas.dtos import (
     StructuredScoringResultDTO,
     TokenCostMetadataDTO,
 )
-from app.services import mock_store, report_generation_service as reports
+from app.services import report_generation_service as reports
 from app.services.report_errors import InvalidReportInputError
+from tests.fakes import mock_store
 
 
 def make_result(

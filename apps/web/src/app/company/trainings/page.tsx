@@ -17,7 +17,7 @@ export default function CompanyTrainingsPage() {
           </section>
           <AssignedTrainings />
           <Card className="rounded-lg border-slate-200">
-            <CardHeader><CardTitle>Mock employee assignment</CardTitle></CardHeader>
+            <CardHeader><CardTitle>Employee assignment</CardTitle></CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-slate-600">This is UI-only. Real employee assignment will come later.</p>
               <Button type="button" className="bg-slate-950 text-white hover:bg-slate-800">

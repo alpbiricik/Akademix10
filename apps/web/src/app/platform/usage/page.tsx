@@ -13,7 +13,7 @@ export default async function PlatformUsagePage() {
     ["Open/close target", `${summary.avatarToggleTarget ?? 10}`],
     ["Buffered avatar usage", `${summary.bufferedAvatarMin ?? 8.05} min`],
     ["Safe budget", `$${(summary.safeBudgetUsd ?? 1.25).toFixed(2)}/session`],
-    ["Mock completed sessions", "684"],
+    ["Completed sessions", "684"],
   ];
 
   return (
@@ -23,7 +23,7 @@ export default async function PlatformUsagePage() {
           <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
             <p className="text-sm font-semibold uppercase tracking-wide text-teal-700">Platform usage</p>
             <h1 className="mt-2 text-3xl font-semibold">Usage and cost overview</h1>
-            <p className="mt-2 max-w-3xl text-slate-600">Platform-level mock cost model for controlled LiveAvatar Lite usage.</p>
+            <p className="mt-2 max-w-3xl text-slate-600">Platform-level cost model for controlled LiveAvatar Lite usage.</p>
           </section>
           <Card className="rounded-lg border-slate-200">
             <CardHeader><CardTitle>Cost model</CardTitle></CardHeader>

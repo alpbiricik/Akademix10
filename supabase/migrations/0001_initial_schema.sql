@@ -146,7 +146,7 @@ create table public.session_feedback (
   feedback_text text,
   improvement_suggestion text,
   next_action text,
-  provider text not null default 'mock',
+  provider text not null default 'system',
   model_name text,
   created_at timestamptz not null default now(),
   metadata jsonb not null default '{}'::jsonb,
@@ -162,7 +162,7 @@ create table public.skill_scores (
   skill text not null,
   score integer not null check (score between 0 and 100),
   delta integer not null default 0,
-  source text not null default 'mock',
+  source text not null default 'ai',
   created_at timestamptz not null default now(),
   unique(session_id, state_id, skill, source)
 );
@@ -193,7 +193,7 @@ create table public.session_cost_logs (
   session_id uuid not null references public.training_sessions(id) on delete cascade,
   state_id uuid references public.training_states(id) on delete set null,
   event_type text not null,
-  provider text not null default 'mock',
+  provider text not null default 'system',
   model_name text,
   input_tokens integer not null default 0,
   output_tokens integer not null default 0,
@@ -228,7 +228,7 @@ create table public.reports (
   strengths jsonb not null default '[]'::jsonb,
   improvement_areas jsonb not null default '[]'::jsonb,
   action_plan jsonb not null default '[]'::jsonb,
-  generated_by text not null default 'mock',
+  generated_by text not null default 'ai',
   generated_at timestamptz not null default now(),
   metadata jsonb not null default '{}'::jsonb
 );

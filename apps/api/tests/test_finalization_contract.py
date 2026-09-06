@@ -5,7 +5,7 @@ from copy import deepcopy
 
 from app.routers.learner import _scoring_results_from_supabase
 from app.core.auth import Principal
-from app.services import finalization_service, mock_store, rubric_repository, scoring_repository, scoring_service
+from app.services import finalization_service, rubric_repository, scoring_repository, scoring_service
 from app.services.ai_provider import MAX_QUERIES_PER_STATE
 from app.services.finalization_cache import InMemoryFinalizationCache, finalization_cache
 from app.services.finalization_service import (
@@ -17,6 +17,8 @@ from app.services.finalization_service import (
     _validate_answers,
     finalize_session,
 )
+from tests.fakes import mock_store
+from tests.fakes.providers import DeterministicScoringProvider
 
 
 class FakeSupabaseClient:
@@ -77,7 +79,7 @@ class ConflictSupabaseClient:
 
 class FinalizationContractTests(unittest.TestCase):
     def setUp(self):
-        scoring_repository.reset_mock_scoring_store()
+        scoring_repository.reset_scoring_store()
         finalization_cache.clear()
         self.states = deepcopy(mock_store.training_states)
         self.answered_state = next(state for state in self.states if state.completionRule == "answered")
@@ -131,13 +133,15 @@ class FinalizationContractTests(unittest.TestCase):
     def test_finalize_scoring_can_bypass_legacy_per_state_query_limit(self):
         session = deepcopy(mock_store.demo_session)
         rubric = rubric_repository.get_rubric_for_state(session.templateId, self.answered_state.id)
+        provider = DeterministicScoringProvider()
         for _ in range(MAX_QUERIES_PER_STATE):
-            scoring_service.score_answer(session, self.answered_state, "This answer is enough to score.", rubric)
+            scoring_service.score_answer(session, self.answered_state, "This answer is enough to score.", rubric, provider=provider)
         result = scoring_service.score_answer(
             session,
             self.answered_state,
             "This final batch answer is enough to score.",
             rubric,
+            provider=provider,
             enforce_query_limit=False,
         )
         self.assertEqual(result.sessionId, session.id)

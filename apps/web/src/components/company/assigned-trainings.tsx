@@ -40,7 +40,7 @@ export function AssignedTrainings() {
       title: template.title,
       companyId: "company-demo",
       companyName: "Northwind Sales Academy",
-      assignedAt: "Mock default",
+      assignedAt: "Current assignment",
       status: "sent_to_company" as const,
     }));
   }, [assignments, templates]);

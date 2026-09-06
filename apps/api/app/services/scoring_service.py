@@ -14,7 +14,7 @@ from app.schemas.dtos import (
     TrainingStateDTO,
 )
 from app.services.ai_provider import MAX_ANSWER_CHARS, MAX_PROVIDER_RETRIES, MAX_QUERIES_PER_STATE, MIN_ANSWER_CHARS, ScoringProvider
-from app.services.mock_ai_provider import MockScoringProvider
+from app.services.gemini_scoring_provider import GeminiScoringProvider
 from app.services.scoring_errors import AnswerGuardrailError, InvalidProviderOutputError, InvalidRubricError, MaxQueriesPerStateError, ProviderRetryExhaustedError
 from app.services import scoring_repository
 
@@ -129,7 +129,7 @@ def score_answer(
             raise MaxQueriesPerStateError("Max queries per state exceeded.")
         scoring_repository.increment_query_count(session.id, state.id)
 
-    active_provider = provider or MockScoringProvider()
+    active_provider = provider or GeminiScoringProvider()
     request = ProviderRequestDTO(
         sessionId=session.id,
         stateId=state.id,

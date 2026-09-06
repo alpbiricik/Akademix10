@@ -59,8 +59,12 @@ export function LearnerReportWorkspace({ sessionId }: { sessionId: string }) {
         getLearnerSessionScoringResults(sessionId),
       ]);
       if (requestId !== requestIdRef.current) return;
+      if (typeof window !== "undefined" && report?.sessionId && report.sessionId !== sessionId) {
+        window.history.replaceState(null, "", `/learner/sessions/${report.sessionId}/report`);
+      }
       setState({ status: "success", data: { report, scoringResults } });
     } catch (error) {
+
       if (requestId !== requestIdRef.current) return;
       setState((current) => ({ status: "error", data: current.data, message: getFriendlyErrorMessage(error) }));
     }

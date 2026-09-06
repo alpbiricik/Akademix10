@@ -1,4 +1,4 @@
--- AkademX10 XAI deterministic demo seed data.
+-- AkademX10 XAI reference seed data.
 -- Idempotent and non-destructive. Does not create auth.users rows.
 
 begin;
@@ -142,7 +142,7 @@ on conflict (assignment_id, learner_id) do update set
   completed_at = excluded.completed_at;
 
 insert into public.training_sessions (id, enrollment_id, module_id, template_id, learner_id, company_id, current_state_id, completed_state_ids, status, started_at, updated_at, completed_at, metadata)
-select '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000801', '00000000-0000-0000-0000-000000000501', '00000000-0000-0000-0000-000000000404', '00000000-0000-0000-0000-000000000203', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000601', '{}', 'in_progress', '2026-07-29T09:00:00Z', '2026-07-29T09:00:00Z', null, '{"mockSessionId":"demo-session-1"}'
+select '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000801', '00000000-0000-0000-0000-000000000501', '00000000-0000-0000-0000-000000000404', '00000000-0000-0000-0000-000000000203', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000601', '{}', 'in_progress', '2026-07-29T09:00:00Z', '2026-07-29T09:00:00Z', null, '{"source":"reference_seed"}'
 where exists (select 1 from public.learner_enrollments where id = '00000000-0000-0000-0000-000000000801')
 on conflict (id) do update set
   current_state_id = excluded.current_state_id,
@@ -152,7 +152,7 @@ on conflict (id) do update set
   metadata = excluded.metadata;
 
 insert into public.training_sessions (id, enrollment_id, module_id, template_id, learner_id, company_id, current_state_id, completed_state_ids, status, started_at, updated_at, completed_at, metadata)
-select '00000000-0000-0000-0000-000000000902', '00000000-0000-0000-0000-000000000802', '00000000-0000-0000-0000-000000000501', '00000000-0000-0000-0000-000000000404', '00000000-0000-0000-0000-000000000204', '00000000-0000-0000-0000-000000000102', '00000000-0000-0000-0000-000000000601', '{}', 'in_progress', '2026-07-29T09:00:00Z', '2026-07-29T09:00:00Z', null, '{"mockSessionId":"demo-session-tenant-b"}'
+select '00000000-0000-0000-0000-000000000902', '00000000-0000-0000-0000-000000000802', '00000000-0000-0000-0000-000000000501', '00000000-0000-0000-0000-000000000404', '00000000-0000-0000-0000-000000000204', '00000000-0000-0000-0000-000000000102', '00000000-0000-0000-0000-000000000601', '{}', 'in_progress', '2026-07-29T09:00:00Z', '2026-07-29T09:00:00Z', null, '{"source":"reference_seed"}'
 where exists (select 1 from public.learner_enrollments where id = '00000000-0000-0000-0000-000000000802')
 on conflict (id) do update set
   current_state_id = excluded.current_state_id,
@@ -182,7 +182,7 @@ on conflict (session_id) do update set
   updated_at = excluded.updated_at;
 
 insert into public.reports (id, session_id, learner_id, company_id, module_id, overall_score, skill_summary, strengths, improvement_areas, action_plan, generated_by, generated_at, metadata)
-select '00000000-0000-0000-0000-000000001101', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000203', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000501', 80, '[{"skill":"Communication","score":80,"delta":8},{"skill":"Empathy","score":76,"delta":8}]', '["Acknowledges customer concerns.","Links value to outcomes."]', '["Ask one more discovery question.","Use proof points earlier."]', '["Open with empathy and discovery.","Close with a dated next step."]', 'mock', '2026-07-29T09:00:00Z', '{"mockReportId":"report-demo-session-1"}'
+select '00000000-0000-0000-0000-000000001101', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000203', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000501', 80, '[{"skill":"Communication","score":80,"delta":8},{"skill":"Empathy","score":76,"delta":8}]', '["Acknowledges customer concerns.","Links value to outcomes."]', '["Ask one more discovery question.","Use proof points earlier."]', '["Open with empathy and discovery.","Close with a dated next step."]', 'ai', '2026-07-29T09:00:00Z', '{"source":"reference_report"}'
 where exists (select 1 from public.training_sessions where id = '00000000-0000-0000-0000-000000000901')
 on conflict (session_id) do update set
   overall_score = excluded.overall_score,
@@ -195,7 +195,7 @@ on conflict (session_id) do update set
   metadata = excluded.metadata;
 
 insert into public.reports (id, session_id, learner_id, company_id, module_id, overall_score, skill_summary, strengths, improvement_areas, action_plan, generated_by, generated_at, metadata)
-select '00000000-0000-0000-0000-000000001102', '00000000-0000-0000-0000-000000000902', '00000000-0000-0000-0000-000000000204', '00000000-0000-0000-0000-000000000102', '00000000-0000-0000-0000-000000000501', 78, '[{"skill":"Communication","score":78,"delta":6},{"skill":"Empathy","score":74,"delta":6}]', '["Keeps the conversation calm.","Names a concrete customer outcome."]', '["Ask a follow-up question before pitching.","Confirm next steps explicitly."]', '["Use one discovery question.","Close with a dated action."]', 'mock', '2026-07-29T09:00:00Z', '{"mockReportId":"report-demo-session-tenant-b"}'
+select '00000000-0000-0000-0000-000000001102', '00000000-0000-0000-0000-000000000902', '00000000-0000-0000-0000-000000000204', '00000000-0000-0000-0000-000000000102', '00000000-0000-0000-0000-000000000501', 78, '[{"skill":"Communication","score":78,"delta":6},{"skill":"Empathy","score":74,"delta":6}]', '["Keeps the conversation calm.","Names a concrete customer outcome."]', '["Ask a follow-up question before pitching.","Confirm next steps explicitly."]', '["Use one discovery question.","Close with a dated action."]', 'ai', '2026-07-29T09:00:00Z', '{"source":"reference_report"}'
 where exists (select 1 from public.training_sessions where id = '00000000-0000-0000-0000-000000000902')
 on conflict (session_id) do update set
   overall_score = excluded.overall_score,

@@ -4,34 +4,21 @@ import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { LockKeyhole } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  MOCK_USER_STORAGE_KEY,
-  parseMockUser,
-  roleDestinations,
-  roleLabels,
-  type MockRole,
-  type MockUserSession,
-} from "@/lib/mock-auth";
-import { DATA_SOURCE_MODE } from "@/lib/api/config";
+import { roleDestinations, roleLabels, type AuthenticatedUser, type UserRole } from "@/lib/auth-types";
 import { getTrustedProfile, refreshStoredSession } from "@/lib/supabase-auth";
 
 export function ProtectedRoute({
   allowedRoles,
   children,
 }: {
-  allowedRoles: MockRole[];
+  allowedRoles: UserRole[];
   children: ReactNode;
 }) {
-  const [user, setUser] = useState<MockUserSession | null>(null);
+  const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
     queueMicrotask(() => {
-      if (DATA_SOURCE_MODE === "mock") {
-        setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
-        setReady(true);
-        return;
-      }
       getTrustedProfile()
         .catch(() => refreshStoredSession())
         .then((profile) => setUser(profile))
@@ -52,7 +39,7 @@ export function ProtectedRoute({
     return (
       <AccessCard
         title="Login required"
-        description="Choose an account type before entering this product area."
+        description="Sign in with your AkademX10 account before entering this product area."
         primaryHref="/login"
         primaryLabel="Go to Login"
       />

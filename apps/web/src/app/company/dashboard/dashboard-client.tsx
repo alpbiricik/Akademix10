@@ -48,7 +48,7 @@ export function CompanyDashboardClient({
           <Metric title="Assigned trainings" value={summary ? `${summary.assignedTrainingCount}` : "..."} detail="From platform" icon={ClipboardList} />
           <Metric title="Completion" value={summary ? `${summary.completionRate}%` : "..."} detail="Current cohort" icon={BarChart3} />
           <Metric title="Skill impact" value={summary ? `+${summary.averageSkillLift}` : "..."} detail="Average lift" icon={BarChart3} />
-          <Metric title="Usage" value="$148" detail="Mock monthly cost" icon={DollarSign} />
+          <Metric title="Usage" value="$148" detail="Current monthly cost" icon={DollarSign} />
         </div>
         <div className="grid gap-4 md:grid-cols-4">
           {links.map((item) => (

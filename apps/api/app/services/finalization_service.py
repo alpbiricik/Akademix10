@@ -165,7 +165,7 @@ def finalize_session(session_id: str, body: FinalizeRequestDTO, principal: Princ
         for state in states:
             if state.id not in by_state:
                 continue
-            rubric = rubric_repository.get_rubric_for_state(working_session.templateId, state.id)
+            rubric = rubric_repository.get_rubric_for_state(working_session.templateId, state.id, state.skillTags)
             result = scoring_service.score_answer(
                 working_session,
                 state,

@@ -1,8 +1,8 @@
 import type {
   TrainingSessionStatus,
   TrainingStateType,
-  UserRole,
 } from "@/lib/state-machine/types";
+import type { UserRole } from "@/lib/auth-types";
 
 export type ISODateTimeString = string;
 export type DTORecord = Record<string, unknown>;
@@ -125,7 +125,7 @@ export interface SessionFeedbackDTO {
   feedbackText: string;
   improvementSuggestion: string;
   nextAction: string;
-  generatedBy: "mock" | "ai";
+  generatedBy: "ai" | "system";
   createdAt: ISODateTimeString;
 }
 
@@ -391,4 +391,29 @@ export interface ReportDTO {
   improvementAreas: string[];
   actionPlan: string[];
   createdAt: ISODateTimeString;
+}
+
+export interface LiveAvatarSessionTokenResponse {
+  provider: string;
+  sessionToken: string | null;
+  avatarId: string | null;
+  voiceId: string | null;
+  quality: string;
+  sessionTimeoutSec: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface LiveAvatarSessionActionRequest {
+  stateId: string;
+  avatarSessionId?: string | null;
+  action: "start" | "stop" | "speak";
+  text?: string | null;
+}
+
+export interface LiveAvatarSessionActionResponse {
+  status: "created" | "started" | "stopped" | "speaking" | "fallback";
+  stateId: string;
+  avatarSessionId: string | null;
+  activeSeconds: number;
+  errorMessage?: string | null;
 }

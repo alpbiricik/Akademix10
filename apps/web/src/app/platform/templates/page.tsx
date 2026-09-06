@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import { PlusCircle } from "lucide-react";
 import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppShell } from "@/components/layout/app-shell";
@@ -6,10 +9,32 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getPlatformTemplates } from "@/lib/adapters/platformAdapter";
 
-export const dynamic = "force-dynamic";
+type PlatformTemplates = Awaited<ReturnType<typeof getPlatformTemplates>>;
 
-export default async function PlatformTemplatesPage() {
-  const templates = await getPlatformTemplates();
+export default function PlatformTemplatesPage() {
+  const [templates, setTemplates] = useState<PlatformTemplates>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getPlatformTemplates()
+      .then((data) => {
+        if (!cancelled) {
+          setTemplates(data);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load templates.");
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <AppShell>
@@ -29,26 +54,40 @@ export default async function PlatformTemplatesPage() {
             </div>
           </section>
 
-          <div className="grid gap-4 md:grid-cols-2">
-            {templates.map((template) => (
-              <Card key={template.id} className="rounded-lg border-slate-200">
-                <CardHeader>
-                  <div className="flex items-start justify-between gap-3">
-                    <CardTitle>{template.title}</CardTitle>
-                    <Badge variant="secondary">{template.category}</Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <p className="text-sm leading-6 text-slate-600">{template.description}</p>
-                  <div className="flex flex-wrap gap-2">
-                    {["Videos", "21-state flow", "LiveAvatar instructions", "Prompts", "Rubrics", "Skill tags"].map((item) => (
-                      <Badge key={item} variant="outline">{item}</Badge>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+          {loading ? (
+            <div className="rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500">
+              Loading templates...
+            </div>
+          ) : error ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              {error}
+            </div>
+          ) : templates.length === 0 ? (
+            <div className="rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500">
+              No templates found.
+            </div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2">
+              {templates.map((template) => (
+                <Card key={template.id} className="rounded-lg border-slate-200">
+                  <CardHeader>
+                    <div className="flex items-start justify-between gap-3">
+                      <CardTitle>{template.title}</CardTitle>
+                      <Badge variant="secondary">{template.category}</Badge>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <p className="text-sm leading-6 text-slate-600">{template.description}</p>
+                    <div className="flex flex-wrap gap-2">
+                      {["Videos", "21-state flow", "LiveAvatar instructions", "Prompts", "Rubrics", "Skill tags"].map((item) => (
+                        <Badge key={item} variant="outline">{item}</Badge>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
         </div>
       </ProtectedRoute>
     </AppShell>

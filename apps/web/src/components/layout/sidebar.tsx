@@ -4,19 +4,14 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { BarChart3 } from "lucide-react";
 import { getLoginNavigationItem, getRoleNavigationItems } from "@/components/layout/navigation-items";
-import { DATA_SOURCE_MODE } from "@/lib/api/config";
-import { MOCK_USER_STORAGE_KEY, parseMockUser, roleLabels, type MockUserSession } from "@/lib/mock-auth";
+import { roleLabels, type AuthenticatedUser } from "@/lib/auth-types";
 import { getTrustedProfile } from "@/lib/supabase-auth";
 
 export function Sidebar() {
-  const [user, setUser] = useState<MockUserSession | null>(null);
+  const [user, setUser] = useState<AuthenticatedUser | null>(null);
 
   useEffect(() => {
     queueMicrotask(() => {
-      if (DATA_SOURCE_MODE === "mock") {
-        setUser(parseMockUser(window.localStorage.getItem(MOCK_USER_STORAGE_KEY)));
-        return;
-      }
       getTrustedProfile().then(setUser).catch(() => setUser(null));
     });
   }, []);
@@ -32,7 +27,7 @@ export function Sidebar() {
           </div>
           <div>
             <p className="font-semibold">AkademX10 XAI</p>
-            <p className="text-xs text-white/60">{user ? roleLabels[user.role] : "Choose an account type"}</p>
+            <p className="text-xs text-white/60">{user ? roleLabels[user.role] : "Sign in required"}</p>
           </div>
         </div>
       </div>

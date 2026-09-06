@@ -23,7 +23,7 @@ export default async function CompanyUsagePage() {
             <h1 className="mt-2 text-3xl font-semibold">Usage and cost for this company</h1>
           </section>
           <Card className="rounded-lg border-slate-200">
-            <CardHeader><CardTitle>Mock cost summary</CardTitle></CardHeader>
+            <CardHeader><CardTitle>Cost summary</CardTitle></CardHeader>
             <CardContent className="grid gap-3 md:grid-cols-2">
               {rows.map(([label, value]) => (
                 <div key={label} className="rounded-md bg-slate-50 p-4">

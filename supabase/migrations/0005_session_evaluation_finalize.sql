@@ -148,7 +148,7 @@ begin
       result_item->>'conciseLearnerFeedback',
       coalesce((result_item->'improvementAreas')->>0, ''),
       result_item->>'recommendedNextAction',
-      coalesce(result_item->'providerMetadata'->>'provider', 'mock'),
+      coalesce(result_item->'providerMetadata'->>'provider', 'ai'),
       result_item->'providerMetadata'->>'model',
       jsonb_build_object(
         'schemaVersion', result_item->>'schemaVersion',

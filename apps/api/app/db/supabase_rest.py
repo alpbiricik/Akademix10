@@ -5,7 +5,12 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from app.db.database import DatabaseConfigurationError, validate_database_configuration
+from app.db.database import (
+    DatabaseConfigurationError,
+    get_database_settings,
+    validate_database_configuration,
+)
+
 
 
 class SupabaseRequestError(RuntimeError):
@@ -15,18 +20,19 @@ class SupabaseRequestError(RuntimeError):
 
 
 def _public_key() -> str:
-    settings = validate_database_configuration()
-    key = settings.supabase_public_key
+    settings = get_database_settings()
+    key = settings.supabase_public_key or settings.supabase_privileged_key
     if not key:
         raise DatabaseConfigurationError("Supabase user-scoped requests require SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY.")
     return key
 
 
 def _base_url() -> str:
-    settings = validate_database_configuration()
+    settings = get_database_settings()
     if not settings.supabase_url:
         raise DatabaseConfigurationError("Supabase URL is required.")
     return settings.supabase_url.rstrip("/")
+
 
 
 def _request(method: str, url: str, headers: dict[str, str], payload: Any | None = None) -> Any:

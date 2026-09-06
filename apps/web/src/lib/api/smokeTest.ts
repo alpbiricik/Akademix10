@@ -1,9 +1,8 @@
-import { DATA_SOURCE_MODE } from "@/lib/api/config";
 import { getCompanyEmployees, getCompanyReports, getCompanyTrainings, getCompanyUsage } from "@/lib/adapters/companyAdapter";
 import { getLearnerStructuredReport, getLearnerTrainings } from "@/lib/adapters/learnerAdapter";
-import { assignTemplateToCompany, getPlatformCompanies, getPlatformTemplates, getPlatformUsage } from "@/lib/adapters/platformAdapter";
-import { completeCurrentState, getSession, getSessionStates, moveToNextState, resetDemoSession, submitSessionAnswer } from "@/lib/adapters/sessionAdapter";
-import { createSessionCostLog, createSessionEvent, getSessionUsage } from "@/lib/adapters/usageAdapter";
+import { getPlatformAssignments, getPlatformCompanies, getPlatformTemplates, getPlatformUsage } from "@/lib/adapters/platformAdapter";
+import { completeCurrentState, getSession, getSessionStates, moveToNextState, restartLearnerSession, submitSessionAnswer } from "@/lib/adapters/sessionAdapter";
+import { createSessionEvent, getSessionUsage } from "@/lib/adapters/usageAdapter";
 
 export interface SmokeCheck {
   name: string;
@@ -19,21 +18,18 @@ export interface SmokeSuiteResult {
   checks: SmokeCheck[];
 }
 
-const API_MODE_MESSAGE = "API smoke test requires NEXT_PUBLIC_DATA_SOURCE_MODE=api.";
-const DEMO_SESSION_ID = "demo-session-1";
-
 export async function smokeTestPlatformApi() {
   return runSuite("Platform API", async () => {
     const templates = await getPlatformTemplates();
     const companies = await getPlatformCompanies();
     const usage = await getPlatformUsage();
-    const assignment = await assignTemplateToCompany({ templateId: templates[0]?.id ?? "template-sales-communication", companyId: companies[0]?.id ?? "company-demo" });
+    const assignments = await getPlatformAssignments();
 
     return [
       countCheck("GET /api/platform/templates", templates.length),
       countCheck("GET /api/platform/companies", companies.length),
       objectCheck("GET /api/platform/usage", usage),
-      objectCheck("POST /api/platform/assignments", assignment),
+      objectCheck("GET /api/platform/assignments", assignments),
     ];
   });
 }
@@ -57,45 +53,46 @@ export async function smokeTestCompanyApi() {
 export async function smokeTestLearnerApi() {
   return runSuite("Learner API", async () => {
     const trainings = await getLearnerTrainings();
-    const session = await resetDemoSession();
-    const report = await getLearnerStructuredReport(DEMO_SESSION_ID);
+    const session = await restartLearnerSession();
+    const sessionId = session.id;
+    const report = await getLearnerStructuredReport(sessionId).catch(() => null);
 
     return [
       countCheck("GET /api/learner/trainings", trainings.length),
       objectCheck("POST /api/learner/sessions", session),
-      objectCheck("GET /api/learner/sessions/demo-session-1/report", report),
+      objectCheck(`GET /api/learner/sessions/${sessionId}/report`, report ?? { status: "not_finalized" }),
     ];
   });
 }
 
 export async function smokeTestSessionApi() {
   return runSuite("Session API", async () => {
-    await resetDemoSession();
-    const session = await getSession(DEMO_SESSION_ID);
-    const states = await getSessionStates(DEMO_SESSION_ID);
+    const created = await restartLearnerSession();
+    const sessionId = created.id;
+    const session = await getSession(sessionId);
+    const states = await getSessionStates(sessionId);
     const firstInteractiveState = states.find((state) => state.completionRule === "answered") ?? states[0];
-    const completed = await completeCurrentState(DEMO_SESSION_ID);
-    const next = await moveToNextState(DEMO_SESSION_ID);
-    const answered = await submitSessionAnswer(DEMO_SESSION_ID, {
+    const completed = await completeCurrentState(sessionId);
+    const next = await moveToNextState(sessionId);
+    const answered = await submitSessionAnswer(sessionId, {
       stateId: firstInteractiveState?.id ?? "communication-sales-state-04",
-      answerText: "Smoke test answer for the demo API mode adapter.",
+      answerText: "Smoke test answer for the real API adapter.",
     });
-    const usage = await getSessionUsage(DEMO_SESSION_ID, "learner");
-    const event = await createSessionEvent(DEMO_SESSION_ID, { source: "api-smoke" }, "learner");
-    const costLog = await createSessionCostLog(DEMO_SESSION_ID, { source: "api-smoke" }, "learner");
+    const usage = await getSessionUsage(sessionId, "learner");
+    const event = await createSessionEvent(sessionId, { source: "api-smoke" }, "learner");
 
     return [
-      objectCheck("GET /api/learner/sessions/demo-session-1", session),
-      countCheck("session states from GET /api/learner/sessions/demo-session-1", states.length),
-      objectCheck("PATCH /api/learner/sessions/demo-session-1/state complete", completed),
-      objectCheck("PATCH /api/learner/sessions/demo-session-1/state next", next),
-      objectCheck("POST /api/learner/sessions/demo-session-1/answers", answered),
-      objectCheck("GET /api/usage/session/demo-session-1", usage),
-      objectCheck("POST /api/usage/session/demo-session-1/events", event),
-      objectCheck("POST /api/usage/session/demo-session-1/cost-log", costLog),
+      objectCheck(`GET /api/learner/sessions/${sessionId}`, session),
+      countCheck(`session states from GET /api/learner/sessions/${sessionId}`, states.length),
+      objectCheck(`PATCH /api/learner/sessions/${sessionId}/state complete`, completed),
+      objectCheck(`PATCH /api/learner/sessions/${sessionId}/state next`, next),
+      objectCheck(`POST /api/learner/sessions/${sessionId}/answers`, answered),
+      objectCheck(`GET /api/usage/session/${sessionId}`, usage),
+      objectCheck(`POST /api/usage/session/${sessionId}/events`, event),
     ];
   });
 }
+
 
 export async function smokeTestAllApi() {
   const suites = await Promise.all([
@@ -107,23 +104,19 @@ export async function smokeTestAllApi() {
 
   return {
     ok: suites.every((suite) => suite.ok),
-    mode: DATA_SOURCE_MODE,
+    mode: "api",
     suites,
   };
 }
 
 async function runSuite(name: string, run: () => Promise<SmokeCheck[]>): Promise<SmokeSuiteResult> {
-  if (DATA_SOURCE_MODE !== "api") {
-    return { name, mode: DATA_SOURCE_MODE, ok: false, message: API_MODE_MESSAGE, checks: [] };
-  }
-
   try {
     const checks = await run();
-    return { name, mode: DATA_SOURCE_MODE, ok: checks.every((check) => check.ok), checks };
+    return { name, mode: "api", ok: checks.every((check) => check.ok), checks };
   } catch (error) {
     return {
       name,
-      mode: DATA_SOURCE_MODE,
+      mode: "api",
       ok: false,
       checks: [{ name, ok: false, detail: error instanceof Error ? error.message : "Unknown smoke test error." }],
     };

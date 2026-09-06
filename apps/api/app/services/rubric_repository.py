@@ -1,10 +1,8 @@
 from app.schemas.dtos import RubricCriterionDTO, RubricDimensionDTO, RubricDTO
-from app.services import mock_store
 
 
-def get_rubric_for_state(template_id: str, state_id: str) -> RubricDTO:
-    state = next((item for item in mock_store.training_states if item.id == state_id), None)
-    skill_tags = state.skillTags if state else ["Communication", "Empathy", "Confidence"]
+def get_rubric_for_state(template_id: str, state_id: str, skill_tags: list[str] | None = None) -> RubricDTO:
+    resolved_skill_tags = skill_tags or ["Communication", "Empathy", "Confidence"]
     return RubricDTO(
         id=f"rubric-{template_id}-v1",
         version="1.0",
@@ -33,7 +31,7 @@ def get_rubric_for_state(template_id: str, state_id: str) -> RubricDTO:
                 description="Uses a coherent progression from acknowledgement to discovery or next step.",
                 weight=0.25,
                 criteria=[RubricCriterionDTO(id="structure-next-step", description="Includes a logical next action.")],
-                skillTags=[tag for tag in skill_tags if tag in {"Closing", "Objection Handling", "Product Knowledge"}] or ["Communication"],
+                skillTags=[tag for tag in resolved_skill_tags if tag in {"Closing", "Objection Handling", "Product Knowledge"}] or ["Communication"],
             ),
             RubricDimensionDTO(
                 id="confidence",

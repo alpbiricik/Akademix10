@@ -9,7 +9,6 @@ async function apiRequest<T>(method: "GET" | "POST" | "PATCH", path: string, opt
   };
 
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
-  if (options.mockRole) headers["x-mock-role"] = options.mockRole;
   if (typeof window !== "undefined") {
     try {
       const rawSession = window.localStorage.getItem("akademx10.supabaseSession");

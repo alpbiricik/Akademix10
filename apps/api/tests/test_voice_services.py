@@ -5,18 +5,21 @@ from typing import AsyncIterator
 
 from app.schemas.dtos import ConversationResultDTO, ProviderMetadataDTO, SpeechToTextEventDTO, TextToSpeechRequestDTO
 from app.routers import learner
-from app.services import conversation_service, mock_store, scoring_repository
+from app.services import conversation_service, scoring_repository
 from app.services.conversation_cache import InMemoryConversationCache
 from app.services.conversation_guardrails import evaluate_input_guardrail
-from app.services.deepgram_stt_provider import DeepgramStreamingSpeechToTextProvider
 from app.services.elevenlabs_stt_provider import ElevenLabsSpeechToTextProvider
 from app.services.elevenlabs_tts_provider import ElevenLabsTextToSpeechProvider
-from app.services.mock_conversation_provider import MockConversationProvider
-from app.services.mock_speech_to_text_provider import MockSpeechToTextProvider
-from app.services.mock_text_to_speech_provider import MockTextToSpeechProvider, text_fallback_result
 from app.services.speech_to_text_provider import stt_metadata
 from app.services.text_to_speech_provider import TextToSpeechError
 from app.services.voice_turn_service import VoiceTurnOrchestrator, get_text_to_speech_provider
+from tests.fakes import mock_store
+from tests.fakes.providers import (
+    DeterministicConversationProvider as MockConversationProvider,
+    DeterministicSpeechToTextProvider as MockSpeechToTextProvider,
+    DeterministicTextToSpeechProvider as MockTextToSpeechProvider,
+    text_fallback_result,
+)
 
 
 async def audio(chunks: list[bytes]) -> AsyncIterator[bytes]:
@@ -76,7 +79,7 @@ class CompleteWithQuestionProvider(MockConversationProvider):
 
 class VoiceServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        scoring_repository.reset_mock_scoring_store()
+        scoring_repository.reset_scoring_store()
         self.cache = InMemoryConversationCache()
         self.session = deepcopy(mock_store.demo_session)
         self.state = deepcopy(next(state for state in mock_store.training_states if state.type == "roleplay"))
@@ -97,32 +100,16 @@ class VoiceServiceTests(unittest.IsolatedAsyncioTestCase):
         events = [event async for event in provider.stream(audio([]))]
         self.assertEqual(next(event for event in events if event.type == "error").metadata.errorCode, "no_audio")
 
-    def test_deepgram_url_uses_nova3_turkish_endpointing_and_event_mapping(self):
-        provider = DeepgramStreamingSpeechToTextProvider(api_key="unit-test", model="nova-3", language="tr", endpointing_ms=500)
-        url = provider._url()
-        self.assertIn("model=nova-3", url)
-        self.assertIn("language=tr", url)
-        self.assertIn("interim_results=true", url)
-        self.assertIn("endpointing=500", url)
-        transcript, confidence = provider._transcript({"channel": {"alternatives": [{"transcript": "merhaba", "confidence": 0.91}]}})
-        self.assertEqual(transcript, "merhaba")
-        self.assertEqual(confidence, 0.91)
-
-    def test_provider_factory_selects_elevenlabs_and_retains_deepgram(self):
+    def test_provider_factory_selects_elevenlabs_only(self):
         original_provider = learner.STT_PROVIDER
         original_key = learner.ELEVENLABS_API_KEY
-        original_deepgram_key = learner.DEEPGRAM_API_KEY
         try:
             learner.STT_PROVIDER = "elevenlabs"
             learner.ELEVENLABS_API_KEY = "unit-test"
             self.assertIsInstance(learner._stt_provider(), ElevenLabsSpeechToTextProvider)
-            learner.STT_PROVIDER = "deepgram"
-            learner.DEEPGRAM_API_KEY = "unit-test"
-            self.assertIsInstance(learner._stt_provider(), DeepgramStreamingSpeechToTextProvider)
         finally:
             learner.STT_PROVIDER = original_provider
             learner.ELEVENLABS_API_KEY = original_key
-            learner.DEEPGRAM_API_KEY = original_deepgram_key
 
     def test_elevenlabs_stt_url_and_transcript_mapping(self):
         provider = ElevenLabsSpeechToTextProvider(api_key="unit-test", model="scribe_v2_realtime", language="tr", vad_silence_threshold_secs=0.8)
@@ -139,7 +126,7 @@ class VoiceServiceTests(unittest.IsolatedAsyncioTestCase):
 
     def test_partial_transcript_does_not_call_conversation_provider(self):
         provider = CountingConversationProvider()
-        orchestrator = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, cache=self.cache)
+        orchestrator = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, tts_provider=MockTextToSpeechProvider(), cache=self.cache)
         orchestrator.handle_partial(
             SpeechToTextEventDTO(type="partial_transcript", transcript="partial", metadata=stt_metadata("mock", "mock", "tr"))
         )
@@ -166,7 +153,7 @@ class VoiceServiceTests(unittest.IsolatedAsyncioTestCase):
 
     def test_final_or_committed_transcript_calls_conversation_once_and_duplicate_is_ignored(self):
         provider = CountingConversationProvider()
-        orchestrator = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, cache=self.cache)
+        orchestrator = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, tts_provider=MockTextToSpeechProvider(), cache=self.cache)
         event = SpeechToTextEventDTO(
             type="committed_transcript",
             transcript="I would ask the customer about renewal value and agree on next steps.",
@@ -183,14 +170,14 @@ class VoiceServiceTests(unittest.IsolatedAsyncioTestCase):
     def test_opening_then_first_followup_does_not_complete_and_second_answer_completes(self):
         provider = CountingConversationProvider()
         VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, tts_provider=MockTextToSpeechProvider(), cache=self.cache).start_opening()
-        first = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, cache=self.cache).handle_final(
+        first = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, tts_provider=MockTextToSpeechProvider(), cache=self.cache).handle_final(
             SpeechToTextEventDTO(type="final_transcript", transcript="I would ask the customer about renewal value.", isFinal=True, speechFinal=True, metadata=stt_metadata("mock", "mock", "tr"))
         )
         self.assertEqual(first.turnNumber, 1)
         self.assertEqual(first.action, "continue")
         self.assertFalse(first.conversationComplete)
         self.assertNotIn(self.state.id, self.session.completedStateIds)
-        second = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, cache=self.cache).handle_final(
+        second = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, tts_provider=MockTextToSpeechProvider(), cache=self.cache).handle_final(
             SpeechToTextEventDTO(type="final_transcript", transcript="I would propose a value review meeting and a plan.", isFinal=True, speechFinal=True, metadata=stt_metadata("mock", "mock", "tr"))
         )
         self.assertEqual(provider.calls, 3)
@@ -199,7 +186,7 @@ class VoiceServiceTests(unittest.IsolatedAsyncioTestCase):
 
     def test_provider_complete_with_followup_question_is_forced_to_continue_before_max_turns(self):
         provider = CompleteWithQuestionProvider()
-        result = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, cache=self.cache).handle_final(
+        result = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, tts_provider=MockTextToSpeechProvider(), cache=self.cache).handle_final(
             SpeechToTextEventDTO(type="final_transcript", transcript="I would ask the customer about renewal value.", isFinal=True, speechFinal=True, metadata=stt_metadata("mock", "mock", "tr"))
         )
         self.assertEqual(result.action, "continue")
@@ -215,12 +202,12 @@ class VoiceServiceTests(unittest.IsolatedAsyncioTestCase):
             "I would ask what outcome matters most.",
             "I would summarize a next step.",
         ]:
-            result = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, cache=self.cache).handle_final(
+            result = VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, tts_provider=MockTextToSpeechProvider(), cache=self.cache).handle_final(
                 SpeechToTextEventDTO(type="final_transcript", transcript=text, isFinal=True, speechFinal=True, metadata=stt_metadata("mock", "mock", "tr"))
             )
         self.assertTrue(result.conversationComplete)
         with self.assertRaises(Exception):
-            VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, cache=self.cache).handle_final(
+            VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, tts_provider=MockTextToSpeechProvider(), cache=self.cache).handle_final(
                 SpeechToTextEventDTO(type="final_transcript", transcript="One more turn.", isFinal=True, speechFinal=True, metadata=stt_metadata("mock", "mock", "tr"))
             )
 
@@ -231,7 +218,7 @@ class VoiceServiceTests(unittest.IsolatedAsyncioTestCase):
             VoiceTurnOrchestrator(self.session, self.state, conversation_provider=provider, cache=self.cache).ensure_accepting_turn()
 
     def test_voice_turn_scoring_isolation(self):
-        VoiceTurnOrchestrator(self.session, self.state, conversation_provider=MockConversationProvider(), cache=self.cache).handle_final(
+        VoiceTurnOrchestrator(self.session, self.state, conversation_provider=MockConversationProvider(), tts_provider=MockTextToSpeechProvider(), cache=self.cache).handle_final(
             SpeechToTextEventDTO(type="final_transcript", transcript="I would ask the customer about renewal value.", isFinal=True, speechFinal=True, metadata=stt_metadata("mock", "mock", "tr"))
         )
         self.assertEqual(scoring_repository.get_query_count(self.session.id, self.state.id), 0)

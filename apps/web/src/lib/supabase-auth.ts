@@ -1,7 +1,7 @@
 "use client";
 
 import { API_BASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "@/lib/api/config";
-import type { MockRole, MockUserSession } from "@/lib/mock-auth";
+import type { AuthenticatedUser, UserRole } from "@/lib/auth-types";
 
 export const SUPABASE_SESSION_STORAGE_KEY = "akademx10.supabaseSession";
 
@@ -36,19 +36,25 @@ export function clearStoredSession() {
 }
 
 async function authRequest(path: string, body: unknown) {
-  if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) throw new Error("Supabase public configuration is missing.");
-  const response = await fetch(`${SUPABASE_URL.replace(/\/$/, "")}${path}`, {
+  const url = (SUPABASE_URL || "").trim().replace(/\/$/, "");
+  const pubKey = (SUPABASE_PUBLISHABLE_KEY || "").trim();
+  if (!url || !pubKey) throw new Error("Supabase public configuration is missing.");
+  const response = await fetch(`${url}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      apikey: SUPABASE_PUBLISHABLE_KEY,
+      apikey: pubKey,
     },
     body: JSON.stringify(body),
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error("Login failed.");
+  if (!response.ok) {
+    const errorMsg = payload.error_description || payload.msg || payload.message || "Invalid email or password.";
+    throw new Error(errorMsg);
+  }
   return payload;
 }
+
 
 export async function signInWithPassword(identifier: string, password: string) {
   const payload = await authRequest("/auth/v1/token?grant_type=password", {
@@ -77,7 +83,7 @@ export async function refreshStoredSession() {
   return getTrustedProfile();
 }
 
-export async function getTrustedProfile(): Promise<MockUserSession> {
+export async function getTrustedProfile(): Promise<AuthenticatedUser> {
   const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
     headers: {
       Accept: "application/json",
@@ -85,7 +91,7 @@ export async function getTrustedProfile(): Promise<MockUserSession> {
     },
   });
   if (!response.ok) throw new Error("Session is not authorized.");
-  const profile = (await response.json()) as { id: string; name?: string; role: MockRole; title?: string; companyId?: string };
+  const profile = (await response.json()) as { id: string; name?: string; role: UserRole; title?: string; companyId?: string };
   return {
     id: profile.id,
     name: profile.name || "AkademX10 User",

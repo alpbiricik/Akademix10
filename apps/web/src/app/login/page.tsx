@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { MockLoginForm } from "@/app/login/mock-login-form";
+import { LoginForm } from "@/app/login/login-form";
 
 export default function LoginPage() {
   return (
@@ -11,13 +11,13 @@ export default function LoginPage() {
           <Link href="/" className="text-sm font-semibold text-teal-700">
             AkademX10 XAI
           </Link>
-          <CardTitle>Choose your workspace</CardTitle>
+          <CardTitle>Sign in to your workspace</CardTitle>
           <p className="text-sm leading-6 text-slate-600">
-            Select your account type to continue into the right AkademX10 workspace.
+            Use your Supabase-backed AkademX10 account to continue.
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
-          <MockLoginForm />
+          <LoginForm />
         </CardContent>
       </Card>
     </main>

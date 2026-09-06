@@ -1,6 +1,6 @@
-export type UserRole = "platform" | "company" | "learner";
+import type { UserRole } from "@/lib/auth-types";
 
-export interface MockUser {
+export interface UserProfile {
   id: string;
   name: string;
   role: UserRole;
@@ -8,7 +8,7 @@ export interface MockUser {
   companyId?: string | null;
 }
 
-export type User = MockUser & {
+export type User = UserProfile & {
   assignedTrainingId?: string;
 };
 
@@ -110,7 +110,7 @@ export interface FeedbackDimension {
   score: number;
 }
 
-export interface MockAIFeedback {
+export interface AIFeedback {
   id: string;
   stateId: string;
   overallScore: number;
@@ -147,7 +147,7 @@ export interface TrainingSession {
   completedAt?: string | null;
   status: TrainingSessionStatus;
   answers: SessionAnswer[];
-  feedback: MockAIFeedback[];
+  feedback: AIFeedback[];
   skillScores: SkillScore[];
   usage: SessionUsage;
 }

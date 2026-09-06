@@ -66,10 +66,11 @@ export default function HomePage() {
                 Login
                 <ArrowRight className="h-4 w-4" />
               </Link>
-              <Link href="/learner/session/demo-session-1" className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-white px-4 text-sm font-semibold text-[#25214d] transition hover:bg-[#eef5ff]">
-                View Demo Session
+              <Link href="/learner/session/active" className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-white px-4 text-sm font-semibold text-[#25214d] transition hover:bg-[#eef5ff]">
+                Start Roleplay Session
                 <PlayCircle className="h-4 w-4" />
               </Link>
+
             </div>
           </div>
 

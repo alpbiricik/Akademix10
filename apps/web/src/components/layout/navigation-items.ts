@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { BarChart3, Building2, ClipboardList, Home, Layers, LogIn, PlayCircle, ShieldCheck, Users } from "lucide-react";
-import type { MockRole, MockUserSession } from "@/lib/mock-auth";
+import type { AuthenticatedUser, UserRole } from "@/lib/auth-types";
 
 export interface RoleNavigationItem {
   title: string;
@@ -9,7 +9,7 @@ export interface RoleNavigationItem {
   icon: LucideIcon;
 }
 
-const roleNavigation: Record<MockRole, RoleNavigationItem[]> = {
+const roleNavigation: Record<UserRole, RoleNavigationItem[]> = {
   platform: [
     { title: "Platform Dashboard", shortTitle: "Platform", href: "/platform/dashboard", icon: ShieldCheck },
     { title: "Training Templates", shortTitle: "Templates", href: "/platform/templates", icon: Layers },
@@ -28,14 +28,15 @@ const roleNavigation: Record<MockRole, RoleNavigationItem[]> = {
   learner: [
     { title: "My Dashboard", shortTitle: "Dashboard", href: "/learner/dashboard", icon: Home },
     { title: "My Trainings", shortTitle: "Trainings", href: "/learner/trainings", icon: Layers },
-    { title: "Start Demo Session", shortTitle: "Demo Session", href: "/learner/session/demo-session-1", icon: PlayCircle },
-    { title: "My Report", shortTitle: "Report", href: "/learner/sessions/demo-session-1/report", icon: ClipboardList },
+    { title: "Training Session", shortTitle: "Session", href: "/learner/session/active", icon: PlayCircle },
+    { title: "My Report", shortTitle: "Report", href: "/learner/sessions/active/report", icon: ClipboardList },
   ],
+
 };
 
 const loginItem: RoleNavigationItem = { title: "Login", shortTitle: "Login", href: "/login", icon: LogIn };
 
-export function getRoleNavigationItems(user: MockUserSession | null, includeLogin = false): RoleNavigationItem[] {
+export function getRoleNavigationItems(user: AuthenticatedUser | null, includeLogin = false): RoleNavigationItem[] {
   const items = user ? roleNavigation[user.role] : [];
   return includeLogin ? [...items, loginItem] : items;
 }

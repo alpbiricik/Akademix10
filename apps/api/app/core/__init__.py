@@ -1,1 +1,1 @@
-"""Core configuration and mock security helpers."""
+"""Core configuration and security helpers."""

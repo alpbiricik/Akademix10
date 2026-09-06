@@ -6,12 +6,10 @@ from app.db import database
 
 
 class DatabaseConfigurationTests(unittest.TestCase):
-    def test_mock_mode_does_not_require_supabase_credentials(self):
+    def test_mock_mode_is_rejected(self):
         with patch.dict(os.environ, {"DATABASE_MODE": "mock"}, clear=True):
-            settings = database.validate_database_configuration()
-            self.assertEqual(settings.mode, database.DatabaseMode.MOCK)
-            self.assertIsNone(database.get_supabase_client())
-            self.assertIsNone(database.get_supabase_privileged_client())
+            with self.assertRaises(database.DatabaseConfigurationError):
+                database.validate_database_configuration()
 
     def test_supabase_mode_requires_server_credentials(self):
         with patch.dict(os.environ, {"DATABASE_MODE": "supabase"}, clear=True):
@@ -33,7 +31,7 @@ class DatabaseConfigurationTests(unittest.TestCase):
             settings = database.validate_database_configuration()
             self.assertEqual(settings.supabase_privileged_key, "secret-key")
 
-    def test_conflicting_privileged_keys_are_rejected(self):
+    def test_prefers_secret_key_over_legacy_service_role_key(self):
         with patch.dict(
             os.environ,
             {
@@ -44,8 +42,9 @@ class DatabaseConfigurationTests(unittest.TestCase):
             },
             clear=True,
         ):
-            with self.assertRaises(database.DatabaseConfigurationError):
-                database.get_database_settings()
+            settings = database.get_database_settings()
+            self.assertEqual(settings.supabase_privileged_key, "secret-key")
+
 
     def test_matching_current_and_legacy_privileged_keys_are_accepted(self):
         with patch.dict(

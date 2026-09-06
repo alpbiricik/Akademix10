@@ -1,7 +1,5 @@
-import type { MockAIFeedback, SessionUsage, TrainingSession, TrainingState } from "@/lib/state-machine/types";
-import { clampScore, sortStatesByOrder } from "@/lib/state-machine/utils";
-
-const AVATAR_COST_PER_MIN = 0.099;
+import type { TrainingSession, TrainingState } from "@/lib/state-machine/types";
+import { sortStatesByOrder } from "@/lib/state-machine/utils";
 
 export function getCurrentState(session: TrainingSession, states: TrainingState[]) {
   const sorted = sortStatesByOrder(states);
@@ -42,7 +40,7 @@ export function completeCurrentState(session: TrainingSession, states: TrainingS
     status: completed ? "completed" : "in_progress",
     updatedAt: now,
     completedAt: completed ? now : session.completedAt ?? null,
-    usage: calculateMockUsage({ ...session, completedStateIds }, states),
+    usage: session.usage,
   };
 }
 
@@ -69,67 +67,6 @@ export function submitAnswer(session: TrainingSession, stateId: string, answerTe
     ...session,
     answers: [...session.answers.filter((item) => item.stateId !== stateId), answer],
     updatedAt: answer.submittedAt,
-  };
-}
-
-export function generateMockFeedback(state: TrainingState, answerText: string): MockAIFeedback {
-  const lengthBonus = answerText.length > 160 ? 8 : answerText.length > 80 ? 5 : 2;
-  const roleplayBonus = state.type === "roleplay" ? 4 : 0;
-  const base = clampScore(72 + lengthBonus + roleplayBonus + (state.order % 5));
-
-  return {
-    id: `feedback-${state.id}-${Date.now()}`,
-    stateId: state.id,
-    overallScore: base,
-    dimensions: [
-      { label: "Clarity", score: clampScore(base + 2) },
-      { label: "Empathy", score: clampScore(base + (state.skillTags.includes("Empathy") ? 5 : 0)) },
-      { label: "Structure", score: clampScore(base - 3) },
-      { label: "Confidence", score: clampScore(base + (state.skillTags.includes("Confidence") ? 4 : 1)) },
-    ],
-    feedbackText: "Strong response. You addressed the context and moved the conversation toward a useful next step.",
-    improvementSuggestion: "Make the customer outcome or tradeoff more explicit before offering a recommendation.",
-    nextAction: "Ask one concise discovery question, then connect your answer to the customer's stated goal.",
-    createdAt: new Date().toISOString(),
-  };
-}
-
-export function applyMockSkillImpact(session: TrainingSession, feedback: MockAIFeedback): TrainingSession {
-  const boost = feedback.overallScore >= 85 ? 4 : feedback.overallScore >= 78 ? 3 : 2;
-  const currentSkills = session.skillScores.length ? session.skillScores : [
-    { skill: "Communication", score: 72, delta: 0 },
-    { skill: "Empathy", score: 68, delta: 0 },
-    { skill: "Objection Handling", score: 64, delta: 0 },
-    { skill: "Confidence", score: 66, delta: 0 },
-  ];
-
-  return {
-    ...session,
-    feedback: [...session.feedback.filter((item) => item.stateId !== feedback.stateId), feedback],
-    skillScores: currentSkills.map((score) => ({
-      ...score,
-      score: clampScore(score.score + boost),
-      delta: score.delta + boost,
-    })),
-    updatedAt: feedback.createdAt,
-  };
-}
-
-export function calculateMockUsage(session: TrainingSession, states: TrainingState[]): SessionUsage {
-  const completedStates = states.filter((state) => session.completedStateIds.includes(state.id) && state.avatarEnabled);
-  const avatarUsedMin = completedStates.reduce((sum, state) => sum + state.avatarBudgetSec / 60, 0);
-  const avatarOpenCount = Math.min(session.usage.avatarToggleTarget, completedStates.length);
-  return calculateMockCost({ ...session.usage, avatarUsedMin, avatarOpenCount });
-}
-
-export function calculateMockCost(usage: SessionUsage): SessionUsage {
-  const estimatedAvatarCostUsd = Number((usage.avatarUsedMin * AVATAR_COST_PER_MIN).toFixed(2));
-  const safeAvatarCostUsd = Number((usage.bufferedAvatarMin * AVATAR_COST_PER_MIN).toFixed(2));
-  return {
-    ...usage,
-    estimatedAvatarCostUsd,
-    safeAvatarCostUsd,
-    estimatedTotalCostUsd: Math.min(usage.safeBudgetUsd, Math.max(estimatedAvatarCostUsd, safeAvatarCostUsd)),
   };
 }
 
