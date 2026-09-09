@@ -1,5 +1,8 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 
 from app.core.auth import Principal, require_role
 from app.core.auth import get_current_principal
@@ -15,6 +18,8 @@ from app.core.config import (
     STT_PROVIDER,
     TTS_LANGUAGE,
     TTS_PROVIDER,
+    VOICE_ENABLED,
+    LIVE_AVATAR_ENABLED,
 )
 from app.db.supabase_mappers import enrollment_from_row, module_from_row, session_from_row, state_from_row, template_from_row, usage_from_row
 from app.db.supabase_rest import SupabaseRequestError, SupabaseUserClient
@@ -70,8 +75,88 @@ from app.services.voice_turn_service import EmptyTranscriptError, VoiceTurnOrche
 router = APIRouter(prefix="/api/learner", tags=["learner"])
 
 
+@router.get("/sessions/{session_id}/voice/delivery/{delivery_id}")
+def get_voice_delivery(session_id: str, delivery_id: str, principal: Principal = Depends(require_role("learner"))) -> dict:
+    from app.services.avatar_delivery import delivery_status
+    session = _load_session(_client(principal), session_id, principal)
+    return delivery_status(session.id, delivery_id)
+
+
+@router.get("/sessions/{session_id}/voice/metrics")
+def get_voice_metrics(session_id: str, principal: Principal = Depends(require_role("learner"))) -> dict:
+    from app.services.voice_poc_metrics import voice_poc_metrics
+    session = _load_session(_client(principal), session_id, principal)
+    return voice_poc_metrics.snapshot(session.id)
+
+
 class StatePatchRequest(BaseModel):
     action: str = "complete"
+
+
+class VoiceStateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    stateId: str = Field(min_length=1, max_length=128)
+
+
+class BrowserMetricRequest(VoiceStateRequest):
+    event: Literal["browser_first_frame", "browser_playback", "browser_end_to_end", "cancel"]
+    metrics: dict[str, float] = Field(default_factory=dict, max_length=1)
+
+
+def _session_state(client, session, state_id):
+    states = client.select("training_states", f"select=*&module_id=eq.{session.moduleId}&order=order_index.asc")
+    state = next((state_from_row(row) for row in states if row["id"] == state_id), None)
+    if state is None:
+        raise HTTPException(status_code=404, detail="State not found.")
+    return state
+
+
+@router.post("/sessions/{session_id}/voice/metrics")
+def record_browser_metric(session_id: str, body: BrowserMetricRequest, principal: Principal = Depends(require_role("learner"))) -> dict:
+    from app.services.voice_poc_metrics import voice_poc_metrics
+    client = _client(principal)
+    session = _load_session(client, session_id, principal)
+    _session_state(client, session, body.stateId)
+    if body.event != "cancel" and set(body.metrics) != {"latency_ms"}:
+        raise HTTPException(status_code=422, detail="Invalid metric fields.")
+    try:
+        voice_poc_metrics.record(session.id, body.stateId, body.event, **body.metrics)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid metric values.") from None
+    return {"status": "accepted"}
+
+
+@router.post("/sessions/{session_id}/voice/cancel")
+def cancel_voice(session_id: str, body: VoiceStateRequest, principal: Principal = Depends(require_role("learner"))) -> dict:
+    from app.services.avatar_delivery import cancel_deliveries
+    client = _client(principal)
+    session = _load_session(client, session_id, principal)
+    _session_state(client, session, body.stateId)
+    cancel_deliveries(session.id, body.stateId)
+    from app.services.prepared_opening import cancel_prepared_openings
+    cancel_prepared_openings(session.id, body.stateId)
+    from app.services.voice_usage_service import schedule_voice_usage
+    schedule_voice_usage(client, session.id)
+    return {"status": "cancelled"}
+
+
+@router.post("/sessions/{session_id}/conversation/recover", response_model=TrainingSessionDTO)
+def recover_conversation(session_id: str, body: VoiceStateRequest, principal: Principal = Depends(require_role("learner"))) -> TrainingSessionDTO:
+    from app.services.conversation_cache import conversation_cache
+    from app.services.finalization_cache import finalization_cache
+    client = _client(principal)
+    session = _load_session(client, session_id, principal)
+    state = _session_state(client, session, body.stateId)
+    if session.completedAt or finalization_cache.get(f"finalization:{session.id}"):
+        raise HTTPException(status_code=409, detail={"code": "evaluation_processing", "message": "Evaluated or pending sessions cannot be changed."})
+    context = conversation_cache.get(f"conversation:{session.id}:{state.id}") or {}
+    if any(turn.get("learnerText", "").strip() for turn in context.get("turns", [])):
+        raise HTTPException(status_code=409, detail={"code": "answers_available", "message": "Existing answers are still available."})
+    client.patch("training_sessions", f"id=eq.{session.id}", {
+        "current_state_id": state.id,
+        "completed_state_ids": [item for item in session.completedStateIds if item != state.id],
+    })
+    return _load_session(client, session.id, principal)
 
 
 class AnswerRequest(BaseModel):
@@ -118,6 +203,8 @@ def _load_session(client: SupabaseUserClient, session_id: str, principal: Princi
         rows = client.select("training_sessions", f"select=*&id=eq.{session_id}&limit=1")
 
     if not rows:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    if principal and (rows[0].get("learner_id") != principal.user_id or rows[0].get("company_id") != principal.company_id):
         raise HTTPException(status_code=404, detail="Session not found.")
     real_session_id = rows[0]["id"]
     usage_rows = client.select("session_usage", f"select=*&session_id=eq.{real_session_id}&limit=1")
@@ -210,71 +297,7 @@ def _synthesize_turn_tts(session: TrainingSessionDTO, state: TrainingStateDTO, t
 
 
 
-def _scoring_results_from_supabase(client: SupabaseUserClient, session_id: str) -> list[StructuredScoringResultDTO]:
-    feedback_rows = client.select("session_feedback", f"select=*&session_id=eq.{session_id}&order=created_at.asc")
-    if not feedback_rows:
-        return []
-    skill_rows = client.select("skill_scores", f"select=*&session_id=eq.{session_id}")
-    skills_by_state: dict[str, list[SkillImpactDTO]] = {}
-    for row in skill_rows:
-        state_id = row.get("state_id")
-        if not state_id:
-            continue
-        skills_by_state.setdefault(state_id, []).append(
-            SkillImpactDTO(
-                skill=row.get("skill", ""),
-                score=row.get("score"),
-                delta=row.get("delta", 0),
-                sourceDimensionIds=[],
-            )
-        )
-
-    results: list[StructuredScoringResultDTO] = []
-    for row in feedback_rows:
-        metadata = row.get("metadata") or {}
-        dimensions = [
-            DimensionScoreDTO(
-                dimensionId=str(item.get("label", "")).lower().replace(" ", "_") or "dimension",
-                name=item.get("label", ""),
-                score=item.get("score", 0),
-                rationale="",
-            )
-            for item in row.get("dimensions") or []
-        ]
-        guardrails = [
-            GuardrailFlagDTO(
-                code=item.get("code", ""),
-                message=item.get("message", ""),
-                severity=item.get("severity", "info"),
-            )
-            for item in metadata.get("guardrailFlags") or []
-        ]
-        results.append(
-            StructuredScoringResultDTO(
-                schemaVersion=metadata.get("schemaVersion", "1.0"),
-                sessionId=session_id,
-                stateId=row["state_id"],
-                answerRef=f"{session_id}:{row['state_id']}:final",
-                rubricId=metadata.get("rubricId", ""),
-                rubricVersion=metadata.get("rubricVersion", ""),
-                overallScore=row.get("overall_score", 0),
-                dimensionScores=dimensions,
-                conciseLearnerFeedback=row.get("feedback_text", ""),
-                strengths=[],
-                improvementAreas=[row.get("improvement_suggestion", "")] if row.get("improvement_suggestion") else [],
-                recommendedNextAction=row.get("next_action") if row.get("next_action") in {"continue", "retry_state", "review_feedback", "complete_state"} else "complete_state",
-                skillImpacts=skills_by_state.get(row["state_id"], []),
-                guardrailFlags=guardrails,
-                providerMetadata=ProviderMetadataDTO(
-                    provider=row.get("provider") or "unknown",
-                    model=row.get("model_name") or "unknown",
-                ),
-                tokenCostMetadata=TokenCostMetadataDTO(),
-                generatedAt=row.get("created_at") or "",
-            )
-        )
-    return results
-
+from app.services.scoring_result_reader import read_scoring_results as _scoring_results_from_supabase
 
 
 @router.get("/trainings", response_model=list[EnrollmentDTO])
@@ -325,6 +348,12 @@ def create_session(principal: Principal = Depends(require_role("learner"))) -> T
 @router.post("/sessions/restart", response_model=TrainingSessionDTO)
 def restart_session(principal: Principal = Depends(require_role("learner"))) -> TrainingSessionDTO:
     client = _client(principal)
+    from app.services.conversation_cache import conversation_cache
+    from app.services.finalization_cache import finalization_cache
+    from app.services.avatar_delivery import deliveries
+    latest = client.select("training_sessions", f"select=id&learner_id=eq.{principal.user_id}&order=started_at.desc&limit=1")
+    if latest and finalization_cache.get(f"finalization:{latest[0]['id']}"):
+        raise HTTPException(status_code=409, detail={"code": "evaluation_processing", "message": "Finish or retry the pending evaluation before restarting."})
     try:
         result = client.rpc("restart_my_latest_training_session", {})
     except Exception as error:
@@ -332,7 +361,14 @@ def restart_session(principal: Principal = Depends(require_role("learner"))) -> 
     session_id = result[0] if isinstance(result, list) and result else result
     if not isinstance(session_id, str):
         raise HTTPException(status_code=502, detail={"code": "session_restart_failed", "message": "Restart did not return a session id."})
-    return _load_session(client, session_id, principal)
+    session = _load_session(client, session_id, principal)
+    conversation_cache.delete_prefix(f"conversation:{session.id}:")
+    from app.services.avatar_delivery import cancel_deliveries
+    cancel_deliveries(session.id)
+    from app.services.prepared_opening import cancel_prepared_openings
+    cancel_prepared_openings(session.id)
+    deliveries.delete_prefix(f"delivery:{session.id}:")
+    return session
 
 
 @router.get("/sessions/{session_id}", response_model=LearnerSessionDataDTO)
@@ -354,7 +390,8 @@ def patch_session_state(session_id: str, body: StatePatchRequest, principal: Pri
     else:
         completed = set(session.completedStateIds)
         completed.add(session.currentStateId)
-        payload = {"completed_state_ids": list(completed), "status": "completed" if len(completed) >= len(states) else "in_progress"}
+        # Only finalize marks the session evaluated; progress alone isn't a report.
+        payload = {"completed_state_ids": list(completed)}
     if payload:
         client.patch("training_sessions", f"id=eq.{session.id}", payload)
     return _load_session(client, session.id, principal)
@@ -382,7 +419,13 @@ def post_conversation_turn(session_id: str, body: ConversationTurnRequestDTO, pr
         completed.add(state.id)
         client.patch("training_sessions", f"id=eq.{session.id}", {"completed_state_ids": list(completed)})
         session = _load_session(client, session.id, principal)
-    tts, avatar_active = _synthesize_turn_tts(session, state, result.assistantText)
+    tts, avatar_active = None, False
+    if not body.textOnly:
+        try:
+            tts, avatar_active = _synthesize_turn_tts(session, state, result.assistantText)
+        except TextToSpeechError:
+            # The accepted turn remains usable even if speech synthesis fails.
+            pass
     return ConversationTurnResponseDTO(
         session=session,
         stateId=state.id,
@@ -398,8 +441,26 @@ def post_conversation_turn(session_id: str, body: ConversationTurnRequestDTO, pr
 
 
 
+@router.post("/sessions/{session_id}/voice/opening/prepare")
+def prepare_voice_opening(session_id: str, body: VoiceStateRequest, principal: Principal = Depends(require_role("learner"))) -> dict:
+    if not VOICE_ENABLED or not LIVE_AVATAR_ENABLED:
+        raise HTTPException(status_code=503, detail={"code": "voice_disabled", "message": "Continue with text."})
+    from app.services.prepared_opening import prepare_opening
+    client = _client(principal)
+    session = _load_session(client, session_id, principal)
+    state = _session_state(client, session, body.stateId)
+    try:
+        return prepare_opening(session, state)
+    except ConversationStateError as error:
+        raise HTTPException(status_code=409, detail={"code": error.code, "message": str(error)}) from None
+    except (ConversationError, TextToSpeechError) as error:
+        raise HTTPException(status_code=502, detail={"code": error.code, "message": "Opening could not be prepared. Continue with text or retry."}) from None
+
+
 @router.post("/sessions/{session_id}/voice/opening", response_model=VoiceOpeningResultDTO)
 def start_voice_opening(session_id: str, body: ConversationTurnRequestDTO, principal: Principal = Depends(require_role("learner"))) -> VoiceOpeningResultDTO:
+    if not VOICE_ENABLED and not body.textOnly:
+        raise HTTPException(status_code=503, detail={"code": "voice_disabled", "message": "Continue with text."})
     client = _client(principal)
     session = _load_session(client, session_id, principal)
     states = [state_from_row(row) for row in client.select("training_states", f"select=*&module_id=eq.{session.moduleId}&order=order_index.asc")]
@@ -407,6 +468,19 @@ def start_voice_opening(session_id: str, body: ConversationTurnRequestDTO, princ
     if not state:
         raise HTTPException(status_code=404, detail="State not found.")
     try:
+        if body.textOnly:
+            from app.schemas.dtos import TextToSpeechMetadataDTO, VoiceTurnMetricsDTO
+            result = conversation_service.start_training_conversation(session, state)
+            return VoiceOpeningResultDTO(
+                stateId=state.id, assistantText=result.assistantText,
+                conversationProviderMetadata=result.providerMetadata,
+                tts=TextToSpeechResultDTO(textFallback=result.assistantText,
+                    metadata=TextToSpeechMetadataDTO(provider="none", model="", voice="", language="tr")),
+                metrics=VoiceTurnMetricsDTO(), avatarSessionActive=False,
+            )
+        if body.preparedOpeningId:
+            from app.services.prepared_opening import consume_prepared_opening
+            return consume_prepared_opening(session, state, body.preparedOpeningId)
         return VoiceTurnOrchestrator(session, state).start_opening()
     except ConversationStateError as error:
         raise HTTPException(status_code=409, detail={"code": error.code, "message": str(error)}) from error
@@ -422,6 +496,8 @@ def create_avatar_session_token(
     body: LiveAvatarSessionTokenRequestDTO,
     principal: Principal = Depends(require_role("learner")),
 ) -> LiveAvatarSessionTokenResponseDTO:
+    if not LIVE_AVATAR_ENABLED:
+        raise HTTPException(status_code=503, detail={"code": "avatar_disabled", "message": "Continue with voice or text."})
     client = _client(principal)
     session = _load_session(client, session_id, principal)
     states = [state_from_row(row) for row in client.select("training_states", f"select=*&module_id=eq.{session.moduleId}&order=order_index.asc")]
@@ -458,7 +534,12 @@ def handle_avatar_session_action(
         if body.action == "start":
             return live_avatar_service.start_avatar_session(session, state, body.avatarSessionId)
         elif body.action == "stop":
-            return live_avatar_service.stop_avatar_session(session, state, body.avatarSessionId)
+            from app.services.avatar_delivery import cancel_deliveries
+            cancel_deliveries(session.id, state.id)
+            response = live_avatar_service.stop_avatar_session(session, state, body.avatarSessionId)
+            from app.services.voice_usage_service import schedule_voice_usage
+            schedule_voice_usage(client, session.id)
+            return response
         elif body.action == "speak":
             return live_avatar_service.speak_avatar(session, state, body.text or "", body.avatarSessionId)
         raise HTTPException(status_code=422, detail={"code": "invalid_action", "message": f"Unsupported avatar action '{body.action}'."})
@@ -472,8 +553,14 @@ def handle_avatar_session_action(
 @router.websocket("/sessions/{session_id}/voice/stt")
 async def stream_voice_turn(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()
+    if not VOICE_ENABLED:
+        await websocket.send_json({"type": "error", "code": "voice_disabled"})
+        await websocket.close(code=1008)
+        return
+    audio_bytes = 0
+    metric_scope = None
     try:
-        start = await websocket.receive_json()
+        start = await asyncio.wait_for(websocket.receive_json(), timeout=15)
         state_id = start.get("stateId")
         access_token = start.get("accessToken")
         if not isinstance(state_id, str):
@@ -500,24 +587,45 @@ async def stream_voice_turn(websocket: WebSocket, session_id: str) -> None:
         orchestrator = VoiceTurnOrchestrator(session, state)
         orchestrator.ensure_accepting_turn()
         provider = _stt_provider()
+        metric_scope = (session.id, state.id)
+        turn_cancelled = False
 
         async def audio_chunks():
+            nonlocal audio_bytes, turn_cancelled
             while True:
                 message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    turn_cancelled = True
+                    from app.services.avatar_delivery import cancel_deliveries
+                    cancel_deliveries(session.id, state.id)
+                    break
                 if "bytes" in message and message["bytes"]:
+                    audio_bytes += len(message["bytes"])
+                    # PCM16 mono 16kHz; bound one mic turn to two minutes.
+                    if audio_bytes > 32000 * 120:
+                        break
                     yield message["bytes"]
                 elif "text" in message and message["text"]:
                     if message["text"] in {"stop", "cancel"}:
+                        if message["text"] == "cancel":
+                            turn_cancelled = True
+                            from app.services.avatar_delivery import cancel_deliveries
+                            cancel_deliveries(session.id, state.id)
                         break
 
         async for event in provider.stream(audio_chunks()):
+            if turn_cancelled:
+                break
             if event.type == "partial_transcript":
                 orchestrator.handle_partial(event)
                 await websocket.send_json({"type": event.type, "transcript": event.transcript, "metadata": event.metadata.model_dump()})
             elif event.type in {"final_transcript", "committed_transcript"}:
+                from app.services.voice_poc_metrics import voice_poc_metrics
+                if event.metadata.finalTranscriptMs is not None:
+                    voice_poc_metrics.record(session.id, state.id, "stt", latency_ms=event.metadata.finalTranscriptMs)
                 await websocket.send_json({"type": event.type, "transcript": event.transcript, "metadata": event.metadata.model_dump()})
                 try:
-                    result = orchestrator.handle_final(event)
+                    result = await asyncio.to_thread(orchestrator.handle_final, event)
                 except EmptyTranscriptError:
                     await websocket.send_json({"type": "error", "code": "empty_transcript"})
                     continue
@@ -527,6 +635,8 @@ async def stream_voice_turn(websocket: WebSocket, session_id: str) -> None:
                         completed.add(state.id)
                         client.patch("training_sessions", f"id=eq.{session.id}", {"completed_state_ids": list(completed)})
                     await websocket.send_json({"type": "voice_turn_result", "result": result.model_dump()})
+            elif event.type == "error":
+                await websocket.send_json({"type": "error", "code": event.metadata.errorCode or "voice_stream_error"})
             else:
                 await websocket.send_json({"type": event.type, "metadata": event.metadata.model_dump()})
         await websocket.close()
@@ -536,37 +646,25 @@ async def stream_voice_turn(websocket: WebSocket, session_id: str) -> None:
     except WebSocketDisconnect:
         return
     except Exception:
-        await websocket.send_json({"type": "error", "code": "voice_stream_error"})
-        await websocket.close(code=1011)
+        try:
+            await websocket.send_json({"type": "error", "code": "voice_stream_error"})
+            await websocket.close(code=1011)
+        except (RuntimeError, WebSocketDisconnect):
+            pass
+    finally:
+        if metric_scope:
+            from app.services.voice_poc_metrics import voice_poc_metrics
+            voice_poc_metrics.record(*metric_scope, "stt", audio_seconds=audio_bytes / 32000)
 
 
 @router.post("/sessions/{session_id}/answers")
 def post_answer(session_id: str, body: AnswerRequest, principal: Principal = Depends(require_role("learner"))) -> dict[str, object]:
     client = _client(principal)
     session = _load_session(client, session_id, principal)
-    states = [state_from_row(row) for row in client.select("training_states", f"select=*&module_id=eq.{session.moduleId}&order=order_index.asc")]
-    state = next((item for item in states if item.id == body.stateId), None)
-    if not state:
-        raise HTTPException(status_code=404, detail="State not found.")
-    session = session_engine.submit_answer(session, body.stateId, body.answerText)
-    rubric = rubric_repository.get_rubric_for_state(session.templateId, state.id, state.skillTags)
-    try:
-        scoring_result = scoring_service.score_answer(session, state, body.answerText, rubric)
-    except MaxQueriesPerStateError as error:
-        raise HTTPException(status_code=429, detail={"code": error.code, "message": str(error)}) from error
-    except (AnswerGuardrailError, InvalidRubricError) as error:
-        raise HTTPException(status_code=422, detail={"code": error.code, "message": str(error)}) from error
-    except (InvalidProviderOutputError, ProviderRetryExhaustedError) as error:
-        raise HTTPException(status_code=502, detail={"code": error.code, "message": str(error)}) from error
-    session = session_engine.apply_scoring_result(session, scoring_result)
-    feedback = session_engine.feedback_from_scoring_result(scoring_result)
-    completed = set(session.completedStateIds)
-    completed.add(body.stateId)
-    try:
-        client.patch("training_sessions", f"id=eq.{session.id}", {"completed_state_ids": list(completed), "current_state_id": session.currentStateId})
-    except SupabaseRequestError as error:
-        raise HTTPException(status_code=error.status_code, detail="Session progress could not be persisted.") from error
-    return {"session": session.model_dump(), "feedback": feedback.model_dump(), "scoringResult": scoring_result.model_dump()}
+    raise HTTPException(
+        status_code=409,
+        detail={"code": "final_evaluation_required", "message": "Answers are evaluated together at session finalize."},
+    )
 
 
 @router.post("/sessions/{session_id}/finalize", response_model=FinalizeResponseDTO)
@@ -576,7 +674,10 @@ def finalize_learner_session(session_id: str, body: FinalizeRequestDTO, principa
     except FinalizationConflictError as error:
         raise HTTPException(status_code=409, detail={"code": error.code, "message": str(error)}) from error
     except FinalizationValidationError as error:
-        raise HTTPException(status_code=422, detail={"code": error.code, "message": str(error)}) from error
+        detail = {"code": error.code, "message": str(error)}
+        if hasattr(error, "missing_state_ids"):
+            detail["missingStateIds"] = error.missing_state_ids
+        raise HTTPException(status_code=422, detail=detail) from error
     except FinalizationError as error:
         raise HTTPException(status_code=502, detail={"code": error.code, "message": str(error)}) from error
 

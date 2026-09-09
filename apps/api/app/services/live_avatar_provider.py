@@ -4,6 +4,7 @@ import urllib.error
 import urllib.request
 import uuid
 import base64
+import threading
 from typing import Any, Protocol
 
 try:
@@ -27,6 +28,48 @@ from app.schemas.dtos import (
     ProviderMetadataDTO,
 )
 
+PCM_BYTES_PER_SECOND = 24000 * 2
+PCM_FRAME_BYTES = 4800
+
+
+def _pcm_frames(chunks, frame_bytes: int = PCM_FRAME_BYTES):
+    """Reframe arbitrary PCM chunks while buffering at most one output frame."""
+    pending = bytearray()
+    for chunk in chunks:
+        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+            raise ValueError("Invalid PCM chunk")
+        view = memoryview(chunk)
+        offset = 0
+        while offset < len(view):
+            take = min(frame_bytes - len(pending), len(view) - offset)
+            pending.extend(view[offset:offset + take])
+            offset += take
+            if len(pending) == frame_bytes:
+                yield bytes(pending)
+                pending.clear()
+    if len(pending) % 2:
+        raise ValueError("PCM16 audio ended on a partial sample")
+    if pending:
+        yield bytes(pending)
+
+
+def _wait_for_audio_deadline(deadline: float, frame_bytes: int, cancel_event=None) -> float:
+    """Pace against a monotonic timeline without adding network send time."""
+    frame_duration = frame_bytes / PCM_BYTES_PER_SECOND
+    deadline += frame_duration
+    now = time.monotonic()
+    if now - deadline > frame_duration:
+        # Reset after a long stall instead of sending a burst to catch up.
+        deadline = now
+    delay = max(0.0, deadline - now)
+    if delay:
+        if cancel_event:
+            if cancel_event.wait(delay):
+                raise LiveAvatarPartialAudioError("Audio cancelled.")
+        else:
+            time.sleep(delay)
+    return deadline
+
 
 class LiveAvatarError(Exception):
     code = "live_avatar_error"
@@ -38,6 +81,10 @@ class LiveAvatarConfigurationError(LiveAvatarError):
 
 class LiveAvatarProviderError(LiveAvatarError):
     code = "live_avatar_provider_error"
+
+
+class LiveAvatarPartialAudioError(LiveAvatarError):
+    code = "avatar_partial_audio"
 
 
 class LiveAvatarProvider(Protocol):
@@ -108,7 +155,7 @@ class HeyGenLiveAvatarProvider:
             with urllib.request.urlopen(req, timeout=15) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except (TimeoutError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as error:
-            raise LiveAvatarProviderError(f"HeyGen streaming token creation failed: {error}") from error
+            raise LiveAvatarProviderError("LiveAvatar session token creation failed.") from None
 
         data = body.get("data") or {}
         session_token = data.get("session_token") or data.get("token") or body.get("token")
@@ -138,19 +185,23 @@ class HeyGenLiveAvatarProvider:
                 livekit_client_token = start_data.get("livekit_client_token")
                 ws_url = start_data.get("ws_url")
                 session_id = start_data.get("session_id") or session_id
-        except urllib.error.HTTPError as error:
-            try:
-                err_body = json.loads(error.read().decode("utf-8"))
-                error_message = err_body.get("message") or str(error)
-                if err_body.get("code") == 4033 or "credit" in error_message.lower():
-                    fallback_reason = "no_credits"
-            except Exception:
-                error_message = str(error)
-        except Exception as error:
-            error_message = str(error)
+        except urllib.error.HTTPError:
+            error_message = "LiveAvatar session start failed."
+        except Exception:
+            error_message = "LiveAvatar session start failed."
 
         if not livekit_url or not livekit_client_token:
             raise LiveAvatarProviderError(error_message or "LiveAvatar did not return LiveKit connection details.")
+        if session_id and ws_url:
+            with self._ws_pool_lock:
+                self._session_urls[session_id] = ws_url
+                timer = threading.Timer(self.timeout_sec, self.stop_session, args=(session_id,))
+                timer.daemon = True
+                previous = self._session_timers.pop(session_id, None)
+                if previous:
+                    previous.cancel()
+                self._session_timers[session_id] = timer
+                timer.start()
         latency_ms = int((time.perf_counter() - started) * 1000)
         return LiveAvatarSessionTokenResponseDTO(
             provider=self.provider_name,
@@ -172,6 +223,29 @@ class HeyGenLiveAvatarProvider:
 
 
     _ws_pool: dict[str, Any] = {}
+    _ws_pool_lock = threading.RLock()
+    # Providers are constructed per request; ownership must outlive an instance.
+    _session_urls: dict[str, str] = {}
+    _session_timers: dict[str, threading.Timer] = {}
+    # Fixed stripes bound lock memory and serialize complete audio utterances.
+    _send_locks = tuple(threading.RLock() for _ in range(64))
+
+    def _receive_events(self, ws_url: str, ws: Any) -> None:
+        # Keep draining provider events while speaking AND between turns. A full
+        # receive queue blocks socket reads, including keepalive pong frames.
+        try:
+            while True:
+                ws.recv()
+        except Exception:
+            pass
+        finally:
+            with self._ws_pool_lock:
+                if self._ws_pool.get(ws_url) is ws:
+                    self._ws_pool.pop(ws_url, None)
+            try:
+                ws.close()
+            except Exception:
+                pass
 
     def _wait_for_lite_connected(self, ws: Any, timeout_sec: float = 8.0) -> bool:
         deadline = time.perf_counter() + timeout_sec
@@ -181,8 +255,8 @@ class HeyGenLiveAvatarProvider:
                 raw = ws.recv(timeout=remaining)
             except TypeError:
                 # Older websockets sync clients may not support timeout here.
-                # In that case, avoid blocking indefinitely and continue.
-                return True
+                # Fail readiness rather than blocking indefinitely or sending early.
+                return False
             except Exception:
                 return False
 
@@ -194,19 +268,26 @@ class HeyGenLiveAvatarProvider:
                 return True
         return False
 
+    def _close_session_socket(self, avatar_session_id: str) -> None:
+        with self._ws_pool_lock:
+            ws_url = self._session_urls.pop(avatar_session_id, None)
+            timer = self._session_timers.pop(avatar_session_id, None)
+            if timer:
+                timer.cancel()
+        if ws_url:
+            with self._send_locks[hash(ws_url) % len(self._send_locks)]:
+                with self._ws_pool_lock:
+                    ws = self._ws_pool.pop(ws_url, None)
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+
     def stop_session(self, avatar_session_id: str) -> bool:
         if not avatar_session_id:
             return True
-        # Close persistent WS if any
-        keys_to_remove = []
-        for ws_url, ws in self._ws_pool.items():
-            try:
-                ws.close()
-            except Exception:
-                pass
-            keys_to_remove.append(ws_url)
-        for k in keys_to_remove:
-            self._ws_pool.pop(k, None)
+        self._close_session_socket(avatar_session_id)
 
         url = f"{self.api_base_url}/sessions/stop"
         payload = json.dumps({"session_id": avatar_session_id}).encode("utf-8")
@@ -226,54 +307,55 @@ class HeyGenLiveAvatarProvider:
         except Exception:
             return False
 
-    def send_audio(self, ws_url: str, pcm_audio: bytes) -> bool:
+    def send_audio(self, ws_url: str, pcm_audio: bytes, cancel_event=None) -> bool:
+        with self._send_locks[hash(ws_url) % len(self._send_locks)]:
+            return self._send_audio_locked(ws_url, pcm_audio, cancel_event)
+
+    def _send_audio_locked(self, ws_url: str, pcm_audio: bytes, cancel_event=None) -> bool:
         if not ws_url or not pcm_audio:
             return False
         if not connect:
             return False
 
-        # PCM16 mono 24kHz = 48000 bytes per second
-        # Stream in ~100ms chunks for real-time pacing so the avatar
-        # can animate lip-sync as audio arrives
-        SAMPLE_RATE = 24000
-        BYTES_PER_SAMPLE = 2  # 16-bit
-        BYTES_PER_SEC = SAMPLE_RATE * BYTES_PER_SAMPLE  # 48000
-        CHUNK_DURATION_MS = 100
-        CHUNK_SIZE = int(BYTES_PER_SEC * CHUNK_DURATION_MS / 1000)  # 4800 bytes
-        MAX_CHUNK_BYTES = 900_000  # stay well under 1MB limit
-
         event_id = str(uuid.uuid4())
+        chunk_index = 0
+        ws = None
         try:
-            ws = self._ws_pool.get(ws_url)
-            if not ws:
-                ws = connect(ws_url)
+            with self._ws_pool_lock:
+                ws = self._ws_pool.get(ws_url)
+            if ws is None:
+                ws = connect(ws_url, open_timeout=10, close_timeout=2)
                 if not self._wait_for_lite_connected(ws):
-                    try:
-                        ws.close()
-                    except Exception:
-                        pass
+                    ws.close()
                     return False
-                self._ws_pool[ws_url] = ws
+                with self._ws_pool_lock:
+                    pooled = self._ws_pool.setdefault(ws_url, ws)
+                if pooled is ws:
+                    threading.Thread(
+                        target=self._receive_events, args=(ws_url, ws), daemon=True,
+                        name="live-avatar-events",
+                    ).start()
+                else:
+                    ws.close()
+                    ws = pooled
 
-            offset = 0
-            total = len(pcm_audio)
-            chunk_index = 0
-            while offset < total:
-                chunk_end = min(offset + min(CHUNK_SIZE, MAX_CHUNK_BYTES), total)
-                chunk = pcm_audio[offset:chunk_end]
+            frames = iter(_pcm_frames((pcm_audio,)))
+            chunk = next(frames, None)
+            deadline = time.monotonic()
+            while chunk is not None:
+                if cancel_event and cancel_event.is_set():
+                    raise LiveAvatarPartialAudioError("Audio cancelled.")
                 speak_msg = {
                     "type": "agent.speak",
                     "event_id": f"{event_id}-{chunk_index}",
                     "audio": base64.b64encode(chunk).decode("ascii"),
                 }
                 ws.send(json.dumps(speak_msg))
-                offset = chunk_end
                 chunk_index += 1
-
-                # Pace to real time: sleep for the duration of this chunk
-                if offset < total:
-                    chunk_duration_sec = len(chunk) / BYTES_PER_SEC
-                    time.sleep(chunk_duration_sec)
+                next_chunk = next(frames, None)
+                if next_chunk is not None:
+                    deadline = _wait_for_audio_deadline(deadline, len(chunk), cancel_event)
+                chunk = next_chunk
 
             # Signal end of audio
             end_msg = {
@@ -283,8 +365,63 @@ class HeyGenLiveAvatarProvider:
             ws.send(json.dumps(end_msg))
             return True
         except Exception:
-            self._ws_pool.pop(ws_url, None)
+            with self._ws_pool_lock:
+                if self._ws_pool.get(ws_url) is ws:
+                    self._ws_pool.pop(ws_url, None)
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+            if chunk_index:
+                raise LiveAvatarPartialAudioError("Audio interrupted after delivery began.") from None
             return False
+
+    def send_audio_stream(self, ws_url, chunks, cancel_event) -> bool:
+        """Same PCM/event contract as buffered audio; no full utterance retained."""
+        with self._send_locks[hash(ws_url) % len(self._send_locks)]:
+            ws = None
+            try:
+                with self._ws_pool_lock:
+                    ws = self._ws_pool.get(ws_url)
+                if ws is None:
+                    ws = connect(ws_url, open_timeout=10, close_timeout=2)
+                    if not self._wait_for_lite_connected(ws):
+                        ws.close()
+                        return False
+                    with self._ws_pool_lock:
+                        self._ws_pool[ws_url] = ws
+                    threading.Thread(target=self._receive_events, args=(ws_url, ws), daemon=True, name="live-avatar-events").start()
+                event_id = str(uuid.uuid4())
+                sent = False
+                index = 0
+                frames = iter(_pcm_frames(chunks))
+                chunk = next(frames, None)
+                deadline = time.monotonic()
+                while chunk is not None:
+                    if cancel_event.is_set():
+                        break
+                    ws.send(json.dumps({"type": "agent.speak", "event_id": f"{event_id}-{index}", "audio": base64.b64encode(chunk).decode("ascii")}))
+                    sent = True
+                    index += 1
+                    next_chunk = next(frames, None)
+                    if next_chunk is not None:
+                        deadline = _wait_for_audio_deadline(deadline, len(chunk), cancel_event)
+                    chunk = next_chunk
+                if cancel_event.is_set():
+                    raise RuntimeError("Cancelled")
+                ws.send(json.dumps({"type": "agent.speak_end", "event_id": event_id}))
+                return sent
+            except Exception:
+                with self._ws_pool_lock:
+                    if self._ws_pool.get(ws_url) is ws:
+                        self._ws_pool.pop(ws_url, None)
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+                raise
 
 
 def get_live_avatar_provider() -> LiveAvatarProvider:

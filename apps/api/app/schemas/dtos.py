@@ -225,6 +225,8 @@ class ConversationGuardrailResultDTO(BaseModel):
 class ConversationTurnRequestDTO(BaseModel):
     stateId: str
     learnerText: str
+    textOnly: bool = False
+    preparedOpeningId: str | None = Field(default=None, max_length=128)
 
 
 class ConversationTurnResponseDTO(BaseModel):
@@ -309,6 +311,7 @@ class VoiceTurnResultDTO(BaseModel):
     tts: TextToSpeechResultDTO
     metrics: VoiceTurnMetricsDTO
     avatarSessionActive: bool = False
+    avatarDeliveryId: str | None = None
 
 
 class VoiceOpeningResultDTO(BaseModel):
@@ -319,6 +322,7 @@ class VoiceOpeningResultDTO(BaseModel):
     tts: TextToSpeechResultDTO
     metrics: VoiceTurnMetricsDTO
     avatarSessionActive: bool = False
+    avatarDeliveryId: str | None = None
 
 
 class LiveAvatarSessionTokenRequestDTO(BaseModel):

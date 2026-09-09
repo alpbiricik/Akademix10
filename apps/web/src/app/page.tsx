@@ -45,9 +45,6 @@ export default function HomePage() {
         </Link>
         <nav className="hidden items-center gap-6 text-sm font-medium text-[#514b7d] md:flex" aria-label="Landing navigation">
           <Link href="/login" className="transition hover:text-[#0967e8]">Login</Link>
-          <Link href="/login" className="transition hover:text-[#0967e8]">Choose Role</Link>
-          <Link href="/company/dashboard" className="transition hover:text-[#0967e8]">Company</Link>
-          <Link href="/platform/dashboard" className="transition hover:text-[#0967e8]">Platform</Link>
         </nav>
       </header>
 

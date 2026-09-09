@@ -58,22 +58,24 @@ class LiveAvatarServiceTests(unittest.TestCase):
 
     def test_avatar_session_start_and_stop_lifecycle(self):
         provider = MockLiveAvatarProvider()
+        token = create_avatar_token(self.session, self.avatar_state, provider=provider, store=self.store)
+        avatar_id = token.metadata["avatarSessionId"]
         # Start session
-        start_res = start_avatar_session(self.session, self.avatar_state, "sess-123", provider=provider, store=self.store)
+        start_res = start_avatar_session(self.session, self.avatar_state, avatar_id, provider=provider, store=self.store)
         self.assertEqual(start_res.status, "started")
-        self.assertEqual(start_res.avatarSessionId, "sess-123")
+        self.assertEqual(start_res.avatarSessionId, avatar_id)
         self.assertEqual(start_res.stateId, self.avatar_state.id)
 
         # Retrieve from store
         active = self.store.get(self.session.id, self.avatar_state.id)
         self.assertIsNotNone(active)
-        self.assertEqual(active["avatarSessionId"], "sess-123")
+        self.assertEqual(active["avatarSessionId"], avatar_id)
         self.assertEqual(active["openCount"], 1)
 
         # Stop session
-        stop_res = stop_avatar_session(self.session, self.avatar_state, "sess-123", provider=provider, store=self.store)
+        stop_res = stop_avatar_session(self.session, self.avatar_state, avatar_id, provider=provider, store=self.store)
         self.assertEqual(stop_res.status, "stopped")
-        self.assertEqual(stop_res.avatarSessionId, "sess-123")
+        self.assertEqual(stop_res.avatarSessionId, avatar_id)
         self.assertGreaterEqual(stop_res.activeSeconds, 0.0)
 
         # Store should now be empty for this session/state

@@ -11,13 +11,32 @@ APP_NAME = os.getenv("APP_NAME", "AkademX10 XAI API")
 APP_ENV = os.getenv("APP_ENV", "local")
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
 API_VERSION = os.getenv("API_VERSION", "0.1.0")
+VOICE_ENABLED = os.getenv("VOICE_ENABLED", "true").lower() == "true"
+LIVE_AVATAR_ENABLED = os.getenv("LIVE_AVATAR_ENABLED", "true").lower() == "true"
+VOICE_STREAMING_ENABLED = os.getenv("VOICE_STREAMING_ENABLED", "false").lower() == "true"
+CONVERSATION_STREAMING_ENABLED = os.getenv("CONVERSATION_STREAMING_ENABLED", "false").lower() == "true"
 
 CONVERSATION_PROVIDER = os.getenv("CONVERSATION_PROVIDER", "gemini").strip().lower()
 CONVERSATION_LANGUAGE = os.getenv("CONVERSATION_LANGUAGE", "tr").strip().lower() or "tr"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_CONVERSATION_MODEL = os.getenv("GEMINI_CONVERSATION_MODEL", "gemini-3.6-flash")
 GEMINI_CONVERSATION_THINKING_LEVEL = os.getenv("GEMINI_CONVERSATION_THINKING_LEVEL", "").strip().lower() or None
-CONVERSATION_CONTEXT_TTL_SECONDS = int(os.getenv("CONVERSATION_CONTEXT_TTL_SECONDS", "1800"))
+def _conversation_context_ttl() -> int:
+    value = os.getenv("CONVERSATION_CONTEXT_TTL_SECONDS")
+    if value is None:
+        if APP_ENV.strip().lower() in {"production", "prod"}:
+            raise ValueError("CONVERSATION_CONTEXT_TTL_SECONDS is required in production")
+        return 1800
+    try:
+        ttl = int(value)
+    except ValueError:
+        raise ValueError("CONVERSATION_CONTEXT_TTL_SECONDS must be a positive integer") from None
+    if ttl <= 0:
+        raise ValueError("CONVERSATION_CONTEXT_TTL_SECONDS must be a positive integer")
+    return ttl
+
+
+CONVERSATION_CONTEXT_TTL_SECONDS = _conversation_context_ttl()
 
 STT_PROVIDER = os.getenv("STT_PROVIDER", "elevenlabs").strip().lower()
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")

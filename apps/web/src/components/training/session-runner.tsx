@@ -13,7 +13,7 @@ import {
   getSessionProgress,
 } from "@/lib/state-machine/engine";
 import { isAvatarState, isInteractiveState, sortStatesByOrder } from "@/lib/state-machine/utils";
-import { completeCurrentState, finalizeSession, getSessionBundle, moveToNextState, moveToPreviousState, restartLearnerSession, startVoiceOpening } from "@/lib/adapters/sessionAdapter";
+import { cancelVoiceDelivery, recordBrowserVoiceMetric, recoverConversationState, completeCurrentState, finalizeSession, getSessionBundle, getVoiceDelivery, moveToNextState, moveToPreviousState, restartLearnerSession, prepareVoiceOpening, startVoiceOpening, submitConversationTurn } from "@/lib/adapters/sessionAdapter";
 import { API_BASE_URL } from "@/lib/api/config";
 import { ApiError } from "@/lib/api/errors";
 import type { TrainingModule, TrainingSession, TrainingState } from "@/lib/state-machine/types";
@@ -30,6 +30,15 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("idle");
   const [voiceAssistantText, setVoiceAssistantText] = useState("");
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [textTurn, setTextTurn] = useState("");
+  const [textPending, setTextPending] = useState(false);
+  const textRequestRef = useRef(0);
+  const [interactionMode, setInteractionMode] = useState<"text" | "voice" | null>(null);
+  const [openingAttempt, setOpeningAttempt] = useState(0);
+  const [briefingMode, setBriefingMode] = useState<"text" | "voice">("text");
+  const [missingStateIds, setMissingStateIds] = useState<string[]>([]);
+  const responseStartedRef = useRef<number | null>(null);
+  const playbackFinishRef = useRef<(() => void) | null>(null);
   const [avatarReady, setAvatarReady] = useState(false);
   const finalizeInFlightRef = useRef(false);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -39,6 +48,8 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
   const voiceSocketRef = useRef<WebSocket | null>(null);
   const voiceStartInFlightRef = useRef(false);
   const voiceOpeningKeyRef = useRef<string | null>(null);
+  const [preparedOpening, setPreparedOpening] = useState<{ key: string; id: string } | null>(null);
+  const preparationRef = useRef<{ key: string; promise: ReturnType<typeof prepareVoiceOpening> } | null>(null);
   const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const cleanupVoiceTurn = useCallback(() => {
@@ -54,6 +65,8 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     voiceSocketRef.current?.close();
     voiceSocketRef.current = null;
     voiceAudioRef.current?.pause();
+    playbackFinishRef.current?.();
+    playbackFinishRef.current = null;
     voiceAudioRef.current = null;
     voiceStartInFlightRef.current = false;
   }, []);
@@ -61,6 +74,13 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     let active = true;
     async function load() {
+      queueMicrotask(() => {
+        if (!active) return;
+        setSession(null);
+        setInteractionMode(null);
+        textRequestRef.current += 1;
+        cleanupVoiceTurn();
+      });
       let bundle = await getSessionBundle(sessionId);
       if (!bundle) {
         const restarted = await restartLearnerSession();
@@ -73,15 +93,20 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
       setStates(loadedStates as TrainingState[]);
       setTraining(loadedTraining);
       setDrafts(readSessionDrafts(loaded.id));
+      try {
+        const savedMode = window.sessionStorage.getItem(`akademx10.sessionMode.${loaded.id}.${loaded.startedAt ?? "new"}`);
+        setInteractionMode(savedMode === "text" || savedMode === "voice" ? savedMode : null);
+      } catch { setInteractionMode(null); }
     }
     load();
     return () => {
       active = false;
     };
-  }, [sessionId]);
+  }, [sessionId, cleanupVoiceTurn]);
 
   useEffect(() => {
     return () => {
+      textRequestRef.current += 1;
       cleanupVoiceTurn();
     };
   }, [cleanupVoiceTurn]);
@@ -90,6 +115,32 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
   const currentState = session ? getCurrentState(session, sortedStates) : null;
   const progress = session ? getSessionProgress(session, sortedStates) : { completed: 0, total: sortedStates.length, percent: 0 };
   const currentStateId = currentState?.id;
+  const activeSessionId = session?.id;
+  const shouldPrepareOpening = Boolean(session && currentState && isAvatarState(currentState) && interactionMode === "voice" && !session.completedStateIds.includes(currentState.id));
+  const preparationKey = `${session?.id}:${currentStateId}:${openingAttempt}`;
+  const preparedOpeningId = preparedOpening?.key === preparationKey ? preparedOpening.id : undefined;
+
+  useEffect(() => {
+    if (!session?.id || !currentStateId || interactionMode !== "voice") return;
+    const cancel = () => { void cancelVoiceDelivery(session.id, currentStateId).catch(() => undefined); };
+    window.addEventListener("pagehide", cancel);
+    return () => {
+      window.removeEventListener("pagehide", cancel);
+      cancel();
+    };
+  }, [session?.id, currentStateId, interactionMode]);
+
+  const recordResponse = useCallback((event: "browser_end_to_end" | "browser_playback") => {
+    if (!session?.id || !currentStateId || responseStartedRef.current === null) return;
+    void recordBrowserVoiceMetric(session.id, currentStateId, event, performance.now() - responseStartedRef.current).catch(() => undefined);
+  }, [session, currentStateId]);
+
+  function startTraining() {
+    if (!session || interactionMode) return;
+    try { window.sessionStorage.setItem(`akademx10.sessionMode.${session.id}.${session.startedAt ?? "new"}`, briefingMode); }
+    catch { /* The chosen mode remains valid for this mounted session. */ }
+    setInteractionMode(briefingMode);
+  }
 
   const applySession = useCallback((next: TrainingSession) => {
     setSession(next);
@@ -107,9 +158,14 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     if (previousStateIdRef.current !== currentStateId) {
       previousStateIdRef.current = currentStateId;
+      textRequestRef.current += 1;
       cleanupVoiceTurn();
       voiceOpeningKeyRef.current = null;
       queueMicrotask(() => {
+        setPreparedOpening(null);
+        preparationRef.current = null;
+        setTextTurn("");
+        setTextPending(false);
         setVoiceStatus("idle");
         setVoiceAssistantText("");
         setVoiceError(null);
@@ -118,9 +174,101 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     }
   }, [cleanupVoiceTurn, currentStateId]);
 
+  const playVoiceAudio = useCallback((audioPayloadBase64?: string | null, contentType?: string | null) => {
+    if (!audioPayloadBase64) return Promise.resolve();
+    try {
+      const bytes = Uint8Array.from(atob(audioPayloadBase64), (char) => char.charCodeAt(0));
+      const blob = new Blob([bytes], { type: contentType || "audio/mpeg" });
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      voiceAudioRef.current = audio;
+      return new Promise<void>((resolve) => {
+        const finish = () => {
+          playbackFinishRef.current = null;
+          URL.revokeObjectURL(url);
+          if (voiceAudioRef.current === audio) voiceAudioRef.current = null;
+          resolve();
+        };
+        playbackFinishRef.current = finish;
+        audio.onplaying = () => recordResponse("browser_playback");
+        audio.onended = finish;
+        audio.onerror = finish;
+        void audio.play().catch(finish);
+      });
+    } catch {
+      return Promise.resolve();
+    }
+  }, [recordResponse]);
+
+  const waitForAvatarSpeech = useCallback(async (text?: string | null, deliverySessionId?: string, deliveryId?: string | null) => {
+    const characterCount = Math.max((text ?? "").trim().length, 40);
+    const estimatedMs = Math.min(Math.max(Math.round((characterCount / 13) * 1000) + 700, 2200), 18000);
+    const generation = textRequestRef.current;
+    const deadline = Date.now() + estimatedMs;
+    const deliveryDeadline = Date.now() + 90000;
+    const pause = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+    if (deliverySessionId && deliveryId) {
+      while (Date.now() < deliveryDeadline && generation === textRequestRef.current) {
+        const remaining = Math.max(0, deliveryDeadline - Date.now());
+        const delivery = await Promise.race([
+          getVoiceDelivery(deliverySessionId, deliveryId).catch(() => null),
+          pause(Math.min(5000, remaining)).then(() => null),
+        ]);
+        if (generation !== textRequestRef.current) return;
+        if (!delivery) {
+          setVoiceError("Ses aktarımı doğrulanamadı. Yanıt metnini okuyarak devam edebilirsin.");
+          break;
+        }
+        if (delivery.status === "fallback") {
+          setVoiceError("Avatar sesi aktarilamadi. Yanit ses olarak oynatiliyor; metni de okuyabilirsin.");
+          await playVoiceAudio(delivery.audioPayloadBase64, delivery.contentType);
+          return;
+        }
+        if (delivery.status === "expired" || delivery.status === "cancelled" || delivery.status === "failed" || delivery.status === "text_only") {
+          setVoiceError(delivery.errorCode ? voiceErrorMessage(delivery.errorCode) : "Ses aktarim durumu alinamadi. Yanit metnini okuyarak devam edebilirsin.");
+          break;
+        }
+        if (delivery.status === "completed") break;
+        await pause(Math.min(750, Math.max(0, deliveryDeadline - Date.now())));
+      }
+    }
+    if (generation === textRequestRef.current) await pause(Math.max(0, deadline - Date.now()));
+  }, [playVoiceAudio]);
+
+  useEffect(() => {
+    if (!shouldPrepareOpening || !activeSessionId || !currentStateId) return;
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setVoiceStatus("processing");
+      setVoiceError(null);
+      setAvatarReady(false);
+      if (preparationRef.current?.key !== preparationKey) {
+        preparationRef.current = { key: preparationKey, promise: prepareVoiceOpening(activeSessionId, currentStateId) };
+      }
+      void preparationRef.current.promise.then((result) => {
+        if (!active) return;
+        setVoiceAssistantText(result.assistantText);
+        if (!result.preparedOpeningId) {
+          setPreparedOpening(null);
+          setVoiceStatus("error");
+          setVoiceError(voiceErrorMessage(result.errorCode ?? undefined));
+          return;
+        }
+        setPreparedOpening({ key: preparationKey, id: result.preparedOpeningId });
+      }).catch((error) => {
+        if (!active) return;
+        setPreparedOpening(null);
+        setVoiceStatus("error");
+        setVoiceError(error instanceof ApiError ? voiceErrorMessage(extractApiErrorCode(error.payload) ?? undefined) : "Acilis hazirlanamadi. Tekrar dene veya yazarak devam et.");
+      });
+    });
+    return () => { active = false; };
+  }, [activeSessionId, currentStateId, shouldPrepareOpening, preparationKey]);
+
   useEffect(() => {
     if (!session || !currentState || !isAvatarState(currentState)) return;
-    if (!avatarReady) return;
+    if (!interactionMode || (interactionMode === "voice" && (!avatarReady || !preparedOpeningId))) return;
     if (session.completedStateIds.includes(currentState.id)) return;
     const openingKey = `${session.id}:${currentState.id}`;
     if (voiceOpeningKeyRef.current === openingKey) return;
@@ -131,15 +279,19 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
       setVoiceStatus("processing");
       setVoiceError(null);
       setVoiceAssistantText("");
-      startVoiceOpening(session.id, currentState.id)
+      responseStartedRef.current = performance.now();
+      startVoiceOpening(session.id, currentState.id, interactionMode === "text", preparedOpeningId)
         .then(async (result) => {
           if (cancelled) return;
+          recordResponse("browser_end_to_end");
           setVoiceAssistantText(result.assistantText);
           setVoiceStatus("speaking");
-          if (!result.avatarSessionActive) {
+          if (interactionMode === "text") {
+            // Text openings never invoke playback, even if an unexpected audio field is returned.
+          } else if (!result.avatarSessionActive) {
             await playVoiceAudio(result.tts?.audioPayloadBase64, result.tts?.contentType);
           } else {
-            await waitForAvatarSpeech(result.assistantText);
+            await waitForAvatarSpeech(result.assistantText, session.id, result.avatarDeliveryId);
           }
           if (cancelled) return;
           setVoiceStatus(result.conversationComplete ? "complete" : "idle");
@@ -149,15 +301,56 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
         })
         .catch(() => {
           if (!cancelled) {
-            setVoiceError("AI acilis mesaji baslatilamadi. Yaniti yazarak devam edebilirsin.");
+            setVoiceError(interactionMode === "text" ? "Acilis sorusu getirilemedi. Acilis sorusunu tekrar getir dugmesiyle yeniden dene." : "AI acilis mesaji baslatilamadi. Yaniti yazarak devam edebilirsin.");
             setVoiceStatus("error");
+            if (interactionMode === "voice") {
+              setPreparedOpening(null);
+              setAvatarReady(false);
+              void cancelVoiceDelivery(session.id, currentState.id).catch(() => undefined);
+            }
           }
         });
     });
     return () => {
       cancelled = true;
     };
-  }, [applySession, avatarReady, currentState, session]);
+  }, [applySession, avatarReady, interactionMode, openingAttempt, preparedOpeningId, currentState, session, playVoiceAudio, waitForAvatarSpeech, recordResponse]);
+
+  function saveTextDraft(value: string) {
+    if (!session || !currentState) return;
+    const next = { ...drafts, [currentState.id]: value };
+    setDrafts(next);
+    try {
+      window.sessionStorage.setItem(draftStorageKey(session.id), JSON.stringify(next));
+    } catch {
+      setSubmitError("Yanıt bu sekmede tutuluyor ancak tarayıcıya kaydedilemedi. Sayfayı yenilemeden eğitimi bitir.");
+    }
+  }
+
+  async function handleTextTurn() {
+    if (!session || !currentState || textPending || !textTurn.trim() || (interactionMode === "text" && !voiceAssistantText)) return;
+    const requestId = ++textRequestRef.current;
+    setTextPending(true);
+    responseStartedRef.current = performance.now();
+    setSubmitError(null);
+    cleanupVoiceTurn();
+    setVoiceStatus("idle");
+    // Typed live turns, like voice transcripts, remain only in backend TTL context.
+    try {
+      const result = await submitConversationTurn(session.id, { stateId: currentState.id, learnerText: textTurn.trim(), textOnly: true });
+      if (requestId !== textRequestRef.current) return;
+      recordResponse("browser_end_to_end");
+      setVoiceAssistantText(result.assistantText);
+      setTextTurn("");
+      setVoiceError(null);
+      setVoiceStatus(result.conversationComplete ? "complete" : "idle");
+      if (isTrainingSession(result.session)) applySession(result.session);
+    } catch (error) {
+      if (requestId === textRequestRef.current) setSubmitError(getSubmitErrorMessage(error));
+    } finally {
+      if (requestId === textRequestRef.current) setTextPending(false);
+    }
+  }
 
   async function handleComplete() {
     if (!session) return;
@@ -186,7 +379,7 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     setSubmitError(null);
     try {
       const answers = sortedStates
-        .filter((state) => isInteractiveState(state))
+        .filter((state) => isInteractiveState(state) && !isAvatarState(state))
         .map((state) => ({ stateId: state.id, answerText: drafts[state.id]?.trim() ?? "" }))
         .filter((answer) => answer.answerText);
       const updated = await finalizeSession(session.id, {
@@ -200,6 +393,10 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
       setDrafts({});
     } catch (error) {
       setSubmitError(getSubmitErrorMessage(error));
+      if (error instanceof ApiError) {
+        const detail = (error.payload as { detail?: { missingStateIds?: unknown } } | null)?.detail;
+        if (Array.isArray(detail?.missingStateIds)) setMissingStateIds(detail.missingStateIds.filter((id): id is string => typeof id === "string"));
+      }
     } finally {
       finalizeInFlightRef.current = false;
       setIsSubmitting(false);
@@ -222,37 +419,8 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     mediaStreamRef.current = null;
   }
 
-  function playVoiceAudio(audioPayloadBase64?: string | null, contentType?: string | null) {
-    if (!audioPayloadBase64) return Promise.resolve();
-    try {
-      const bytes = Uint8Array.from(atob(audioPayloadBase64), (char) => char.charCodeAt(0));
-      const blob = new Blob([bytes], { type: contentType || "audio/mpeg" });
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      voiceAudioRef.current = audio;
-      return new Promise<void>((resolve) => {
-        const finish = () => {
-          URL.revokeObjectURL(url);
-          if (voiceAudioRef.current === audio) voiceAudioRef.current = null;
-          resolve();
-        };
-        audio.onended = finish;
-        audio.onerror = finish;
-        void audio.play().catch(finish);
-      });
-    } catch {
-      return Promise.resolve();
-    }
-  }
-
-  function waitForAvatarSpeech(text?: string | null) {
-    const characterCount = Math.max((text ?? "").trim().length, 40);
-    const estimatedMs = Math.min(Math.max(Math.round((characterCount / 13) * 1000) + 700, 2200), 18000);
-    return new Promise<void>((resolve) => window.setTimeout(resolve, estimatedMs));
-  }
-
   async function handleStartVoiceTurn() {
-    if (!session || !currentState || voiceStartInFlightRef.current || voiceStatus !== "idle") return;
+    if (interactionMode !== "voice" || !session || !currentState || textPending || voiceStartInFlightRef.current || (voiceStatus !== "idle" && voiceStatus !== "error")) return;
     if (session.completedStateIds.includes(currentState.id)) {
       setVoiceError("Bu gorusme adimi zaten tamamlandi.");
       setVoiceStatus("error");
@@ -263,16 +431,23 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
       setVoiceStatus("error");
       return;
     }
+    const voiceGeneration = textRequestRef.current;
     voiceStartInFlightRef.current = true;
     setVoiceError(null);
     setVoiceAssistantText("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (voiceGeneration !== textRequestRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       mediaStreamRef.current = stream;
       const socket = new WebSocket(websocketUrl(`/api/learner/sessions/${session.id}/voice/stt`));
+      let receivedResult = false;
       voiceSocketRef.current = socket;
       socket.binaryType = "arraybuffer";
       socket.onopen = () => {
+        if (voiceGeneration !== textRequestRef.current || voiceSocketRef.current !== socket) return;
         socket.send(JSON.stringify({ stateId: currentState.id, accessToken: readSupabaseAccessToken() }));
         const context = new AudioContext();
         const source = context.createMediaStreamSource(stream);
@@ -291,18 +466,22 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
         voiceStartInFlightRef.current = false;
       };
       socket.onmessage = (event) => {
-        const payload = JSON.parse(event.data as string) as { type?: string; transcript?: string; result?: { assistantText?: string; conversationComplete?: boolean; avatarSessionActive?: boolean; tts?: { audioPayloadBase64?: string | null; contentType?: string | null } } ; code?: string };
+        if (voiceGeneration !== textRequestRef.current || voiceSocketRef.current !== socket) return;
+        const payload = JSON.parse(event.data as string) as { type?: string; transcript?: string; result?: { assistantText?: string; conversationComplete?: boolean; avatarSessionActive?: boolean; avatarDeliveryId?: string | null; tts?: { audioPayloadBase64?: string | null; contentType?: string | null } } ; code?: string };
         if (payload.type === "final_transcript" || payload.type === "committed_transcript") {
           setVoiceStatus("processing");
           stopAudioCapture();
         }
         if (payload.type === "voice_turn_result" && payload.result) {
+          receivedResult = true;
+          recordResponse("browser_end_to_end");
           setVoiceAssistantText(payload.result.assistantText ?? "");
           setVoiceStatus("speaking");
           const playback = payload.result.avatarSessionActive
-            ? waitForAvatarSpeech(payload.result.assistantText ?? "")
+            ? waitForAvatarSpeech(payload.result.assistantText ?? "", session.id, payload.result.avatarDeliveryId)
             : playVoiceAudio(payload.result.tts?.audioPayloadBase64, payload.result.tts?.contentType);
           void playback.then(() => {
+            if (voiceGeneration !== textRequestRef.current) return;
             setVoiceStatus(payload.result?.conversationComplete ? "complete" : "idle");
           });
           if (payload.result.conversationComplete && session && currentState) {
@@ -316,12 +495,19 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
         }
       };
       socket.onerror = () => {
+        if (voiceGeneration !== textRequestRef.current || voiceSocketRef.current !== socket) return;
         setVoiceError("Ses aktarim baglantisi kurulamadı. Yaniti yazarak devam edebilirsin.");
         setVoiceStatus("error");
         cleanupVoiceTurn();
       };
       socket.onclose = () => {
+        if (voiceGeneration !== textRequestRef.current || voiceSocketRef.current !== socket) return;
         voiceStartInFlightRef.current = false;
+        if (!receivedResult) {
+          stopAudioCapture();
+          setVoiceError("Ses bağlantısı kapandı. Mikrofonu tekrar açabilir veya yazarak devam edebilirsin.");
+          setVoiceStatus("error");
+        }
       };
     } catch (error) {
       cleanupVoiceTurn();
@@ -334,6 +520,7 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
     if (voiceStatus === "listening") {
       stopAudioCapture();
       if (voiceSocketRef.current?.readyState === WebSocket.OPEN) voiceSocketRef.current.send("stop");
+      responseStartedRef.current = performance.now();
       setVoiceStatus("processing");
     } else {
       cleanupVoiceTurn();
@@ -343,6 +530,36 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
 
   if (!session || !currentState) {
     return <Card className="rounded-lg border-slate-200"><CardContent className="p-6 text-sm text-slate-600">Egitim yukleniyor...</CardContent></Card>;
+  }
+
+  if (!interactionMode) {
+    return (
+      <Card className="mx-auto max-w-2xl rounded-lg border-slate-200">
+        <CardHeader><CardTitle>{training?.title ?? "Egitime hazirlik"}</CardTitle></CardHeader>
+        <CardContent className="space-y-6">
+          <p className="text-sm text-slate-600">Baslamadan once egitimin nasil ilerledigini incele ve katilim seklini sec.</p>
+          <ul className="list-disc space-y-2 pl-5 text-sm text-slate-700">
+            <li>Bilgi adimlarini incele, sorulari kendi deneyimine gore yanitla.</li>
+            <li>AI ile pratik adimlarinda acilis sorusunu bekle ve sirayla yanit ver.</li>
+            <li>Yanitlarin egitimin sonunda birlikte degerlendirilir; final raporunda puan ve geri bildirim alirsin.</li>
+            <li>Egitimi ayni sekmede tamamla. Uzun sure ara verirsen bazi konusma yanitlarini yeniden vermen gerekebilir.</li>
+            <li>Secimin bu egitim boyunca kullanilir. Sesli kullanim icin mikrofon izni gerekir.</li>
+          </ul>
+          <fieldset className="space-y-3">
+            <legend className="mb-2 text-sm font-medium">Nasil devam etmek istersin?</legend>
+            <label className="flex items-center gap-2 rounded-md border p-3 text-sm">
+              <input type="radio" name="training-mode" value="text" checked={briefingMode === "text"} onChange={() => setBriefingMode("text")} />
+              Yazili: AI ile yazisarak devam et, mikrofon ve avatar kullanma.
+            </label>
+            <label className="flex items-center gap-2 rounded-md border p-3 text-sm">
+              <input type="radio" name="training-mode" value="voice" checked={briefingMode === "voice"} onChange={() => setBriefingMode("voice")} />
+              Sesli: Avatar ile konusarak devam et.
+            </label>
+          </fieldset>
+          <Button onClick={startTraining}>Egitime Basla</Button>
+        </CardContent>
+      </Card>
+    );
   }
 
   return (
@@ -380,8 +597,11 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
         <LearningPath states={sortedStates} currentStateId={currentState.id} completedStateIds={session.completedStateIds} />
 
         <section className="space-y-6">
-          {isAvatarState(currentState) ? (
+          {isAvatarState(currentState) && interactionMode === "voice" && !preparedOpeningId && voiceStatus !== "error" && !session.completedStateIds.includes(currentState.id) ? <p role="status" className="rounded-lg bg-slate-50 p-4 text-sm">Acilis hazirlaniyor. Avatar hazir oldugunda baglanacak.</p> : null}
+          {isAvatarState(currentState) && interactionMode === "voice" && preparedOpeningId && (!session.completedStateIds.includes(currentState.id) || voiceStatus === "speaking") ? (
             <LiveAvatarView
+              key={`${session.id}:${currentState.id}`}
+              onPlaybackStarted={() => recordResponse("browser_playback")}
               sessionId={session.id}
               stateId={currentState.id}
               isSpeaking={voiceStatus === "speaking"}
@@ -392,6 +612,9 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
               onAvatarError={(error) => {
                 setAvatarReady(false);
                 setVoiceError(error);
+                setVoiceStatus("error");
+                setPreparedOpening(null);
+                void cancelVoiceDelivery(session.id, currentState.id).catch(() => undefined);
               }}
             />
           ) : null}
@@ -419,37 +642,88 @@ export function SessionRunner({ sessionId }: { sessionId: string }) {
               <DynamicStateContent state={currentState} />
 
 
-              {isAvatarState(currentState) ? (
+              {isAvatarState(currentState) && interactionMode === "voice" ? (
                 <VoicePocBox
                   status={voiceStatus}
                   error={voiceError}
-                  disabled={session.completedStateIds.includes(currentState.id) || voiceStatus === "complete"}
+                  disabled={!preparedOpeningId || !avatarReady || textPending || session.completedStateIds.includes(currentState.id) || voiceStatus === "complete"}
                   onStart={handleStartVoiceTurn}
                   onStop={handleStopVoiceTurn}
                 />
               ) : null}
 
+              {isAvatarState(currentState) && (interactionMode === "voice" || !voiceAssistantText) && voiceStatus === "error" ? <Button variant="outline" onClick={async () => {
+                const retryGeneration = textRequestRef.current;
+                setVoiceStatus("processing");
+                if (interactionMode === "voice") {
+                  try { await cancelVoiceDelivery(session.id, currentState.id); }
+                  catch { if (retryGeneration === textRequestRef.current) { setVoiceStatus("error"); setVoiceError("Hazirlik sifirlanamadi. Tekrar dene."); } return; }
+                }
+                if (retryGeneration !== textRequestRef.current) return;
+                preparationRef.current = null;
+                voiceOpeningKeyRef.current = null;
+                setPreparedOpening(null);
+                setAvatarReady(false);
+                setOpeningAttempt((attempt) => attempt + 1);
+              }}>Acilis sorusunu tekrar getir</Button> : null}
+              {voiceError ? <p role="alert" className="text-sm text-amber-900">{voiceError}</p> : null}
+              {voiceAssistantText ? <p aria-live="polite" className="whitespace-pre-wrap rounded-md bg-slate-50 p-4 text-sm">{voiceAssistantText}</p> : null}
+              {(isInteractiveState(currentState) || isAvatarState(currentState)) && (!isAvatarState(currentState) || interactionMode !== null) ? (
+                <div className="space-y-3">
+                  {!isAvatarState(currentState) ? <p className="whitespace-pre-wrap text-sm text-slate-700">{currentState.prompt}</p> : null}
+                  <label htmlFor="training-answer" className="block text-sm font-medium">
+                    {isAvatarState(currentState) ? "Yazarak devam et" : "Yanıtın"}
+                  </label>
+                  <textarea
+                    id="training-answer"
+                    className="min-h-28 w-full rounded-md border border-slate-300 p-3 text-sm"
+                    maxLength={isAvatarState(currentState) ? 2000 : 4000}
+                    value={isAvatarState(currentState) ? textTurn : drafts[currentState.id] ?? ""}
+                    disabled={isSubmitting || textPending || session.status === "completed" || (isAvatarState(currentState) && interactionMode === "text" && !voiceAssistantText)}
+                    onChange={(event) => isAvatarState(currentState) ? setTextTurn(event.target.value) : saveTextDraft(event.target.value)}
+                  />
+                  {isAvatarState(currentState) ? (
+                    <Button onClick={handleTextTurn} disabled={!textTurn.trim() || (interactionMode === "text" && !voiceAssistantText) || textPending || isSubmitting || voiceStatus === "listening" || voiceStatus === "processing" || voiceStatus === "speaking" || session.completedStateIds.includes(currentState.id)}>
+                      {textPending ? "Yanıt hazırlanıyor..." : "Yazılı yanıt gönder"}
+                    </Button>
+                  ) : <p className="text-xs text-slate-500">Yanıtın bu sekmede saklanır ve eğitim sonunda değerlendirilir.</p>}
+                </div>
+              ) : null}
+              {session.completedAt ? <a className="font-medium text-teal-700 underline" href={`/learner/sessions/${session.id}/report`}>Final raporunu aç</a> : null}
+
               {submitError ? (
                 <div role="alert" className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-950">
                   {submitError}
+                  {missingStateIds.map((id) => {
+                    const missing = sortedStates.find((state) => state.id === id);
+                    return missing ? <Button key={id} variant="outline" className="m-1" disabled={isSubmitting} onClick={async () => {
+                      setIsSubmitting(true);
+                      try {
+                        const recovered = await recoverConversationState(session.id, id);
+                        applySession(recovered);
+                        setMissingStateIds([]);
+                      } catch (error) { setSubmitError(getSubmitErrorMessage(error)); }
+                      finally { setIsSubmitting(false); }
+                    }}>Adim {missing.order}: {missing.title} - yeniden yanitla</Button> : null;
+                  })}
                 </div>
               ) : null}
 
               <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-5">
-                <Button variant="outline" onClick={handleMovePrevious} disabled={!canMovePrevious(session, sortedStates)}>
+                <Button variant="outline" onClick={handleMovePrevious} disabled={textPending || isSubmitting || !canMovePrevious(session, sortedStates)}>
                   <ArrowLeft className="h-4 w-4" />
                   Önceki
                 </Button>
-                <Button variant="secondary" onClick={handleComplete} disabled={session.completedStateIds.includes(currentState.id)}>
+                <Button variant="secondary" onClick={handleComplete} disabled={textPending || isSubmitting || session.completedStateIds.includes(currentState.id)}>
                   <CheckCircle2 className="h-4 w-4" />
                   Tamamla
                 </Button>
-                <Button onClick={handleMoveNext} disabled={!canMoveNext(session, sortedStates)}>
+                <Button onClick={handleMoveNext} disabled={textPending || isSubmitting || !canMoveNext(session, sortedStates)}>
                   Sonraki
                   <ArrowRight className="h-4 w-4" />
                 </Button>
                 {currentState.type === "final" ? (
-                  <Button type="button" onClick={handleFinalize} disabled={isSubmitting}>
+                  <Button type="button" onClick={handleFinalize} disabled={isSubmitting || Boolean(session.completedAt)}>
                     <Sparkles className="h-4 w-4" />
                     {isSubmitting ? "Tamamlanıyor..." : "Eğitimi Bitir"}
                   </Button>
@@ -520,14 +794,20 @@ function draftStorageKey(sessionId: string) {
 function readSessionDrafts(sessionId: string): Record<string, string> {
   try {
     const raw = window.sessionStorage.getItem(draftStorageKey(sessionId));
-    return raw ? JSON.parse(raw) as Record<string, string> : {};
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === "string")) as Record<string, string>;
   } catch {
     return {};
   }
 }
 
 function clearSessionDrafts(sessionId: string) {
-  window.sessionStorage.removeItem(draftStorageKey(sessionId));
+  try {
+    window.sessionStorage.removeItem(draftStorageKey(sessionId));
+  } catch {
+    // The evaluation has already completed; storage availability must not undo it.
+  }
 }
 
 function getFinalizeKey(sessionId: string) {
@@ -633,6 +913,10 @@ function readSupabaseAccessToken() {
 }
 
 function voiceErrorMessage(code?: string) {
+  if (code?.includes("quota")) return "Ses hizmetinin kredisi tukendi. Yazarak devam edebilirsin.";
+  if (code?.includes("rate_limit")) return "Ses hizmeti su an yogun. Biraz sonra tekrar dene veya yazarak devam et.";
+  if (code?.includes("timeout")) return "Ses hizmeti zamaninda yanit vermedi. Yazarak devam edebilirsin.";
+  if (code?.includes("empty_audio")) return "Ses uretilemedi. Yanit metnini okuyarak devam edebilirsin.";
   if (code === "stt_provider_not_configured") return "Ses tanima servisi yapilandirilmamis. Yaniti yazarak devam edebilirsin.";
   if (code === "empty_transcript") return "Net bir konusma algilanamadi. Tekrar dene veya yanitini yaz.";
   if (code === "session_not_found" || code === "state_not_found") return "Bu sesli gorusme artik kullanilamiyor.";
@@ -654,6 +938,9 @@ function floatToPcm16(input: Float32Array, sourceRate: number, targetRate: numbe
 function getSubmitErrorMessage(error: unknown) {
   if (error instanceof ApiError) {
     const code = extractApiErrorCode(error.payload);
+  if (code === "missing_session_answers") return "Bazi yanitlar artik mevcut degil. Asagidaki adimlara donup yeniden yanitlayabilirsin.";
+    if (code === "evaluation_processing") return "Değerlendirme devam ediyor. Yanıtların korundu; biraz sonra Eğitimi Bitir düğmesine tekrar bas.";
+    if (code === "invalid_finalization_payload") return "Değerlendirilecek yanıt eksik veya konuşma süresi dolmuş olabilir. Önceki adımlardaki yanıtlarını kontrol edip tekrar dene.";
     if (error.status === 429 || code === "max_queries_per_state") {
       return "Bu adım AI geri bildirim limitine ulaştı. Yanıtın silinmedi; sonraki adıma geçebilir veya eğitimi baştan başlatabilirsin.";
     }

@@ -1,3 +1,6 @@
+import threading
+from functools import wraps
+
 from app.core.config import CONVERSATION_CONTEXT_TTL_SECONDS, CONVERSATION_LANGUAGE, CONVERSATION_PROVIDER, GEMINI_API_KEY, GEMINI_CONVERSATION_MODEL, GEMINI_CONVERSATION_THINKING_LEVEL
 from app.schemas.dtos import (
     ConversationConfigDTO,
@@ -12,6 +15,17 @@ from app.services.conversation_errors import ConversationProviderConfigurationEr
 from app.services.conversation_guardrails import evaluate_input_guardrail, fallback_result, validate_output_guardrail
 from app.services.conversation_provider import ConversationProvider, MAX_CONVERSATION_PROVIDER_RETRIES, MAX_CONVERSATION_TURNS
 from app.services.gemini_conversation_provider import GeminiConversationProvider
+
+
+_turn_locks = tuple(threading.RLock() for _ in range(64))
+
+
+def _serialized_turn(function):
+    @wraps(function)
+    def guarded(session, state, *args, **kwargs):
+        with _turn_locks[hash((session.id, state.id)) % len(_turn_locks)]:
+            return function(session, state, *args, **kwargs)
+    return guarded
 
 
 def get_conversation_provider() -> ConversationProvider:
@@ -53,6 +67,9 @@ def _load_context(cache: InMemoryConversationCache, session_id: str, state_id: s
 
 def _save_context(cache: InMemoryConversationCache, session_id: str, state_id: str, payload: dict) -> None:
     cache.put(_cache_key(session_id, state_id), payload, ttl_seconds=CONVERSATION_CONTEXT_TTL_SECONDS)
+    # Retain earlier states while this training is active, without sending them
+    # to the conversation model or storing transcripts permanently.
+    cache.touch_prefix(f"conversation:{session_id}:", CONVERSATION_CONTEXT_TTL_SECONDS)
 
 
 def reset_conversation_context(session_id: str, state_id: str, cache: InMemoryConversationCache = conversation_cache) -> None:
@@ -78,6 +95,7 @@ def _assistant_expects_learner_reply(text: str) -> bool:
     return any(marker in normalized for marker in followup_markers)
 
 
+@_serialized_turn
 def start_training_conversation(
     session: TrainingSessionDTO,
     state: TrainingStateDTO,
@@ -128,8 +146,18 @@ def start_training_conversation(
             break
         except Exception as error:
             last_error = error
+            from app.services.voice_poc_metrics import voice_poc_metrics
+            voice_poc_metrics.record(session.id, state.id, "error")
+            if not getattr(error, "retryable", True):
+                result = fallback_result(provider="fallback", model="provider-unavailable")
+                voice_poc_metrics.record(session.id, state.id, "fallback")
+                break
+            if attempt <= MAX_CONVERSATION_PROVIDER_RETRIES:
+                voice_poc_metrics.record(session.id, state.id, "retry")
     else:
-        raise ConversationProviderError(f"Gemini opening retry limit exhausted: {type(last_error).__name__ if last_error else 'unknown'}")
+        if not isinstance(last_error, ConversationProviderError):
+            raise ConversationProviderError("Conversation opening could not be generated.")
+        result = fallback_result(provider="fallback", model="provider-unavailable")
 
     result.action = "continue"
     _save_context(
@@ -141,6 +169,7 @@ def start_training_conversation(
     return result
 
 
+@_serialized_turn
 def continue_training_conversation(
     session: TrainingSessionDTO,
     state: TrainingStateDTO,
@@ -208,8 +237,19 @@ def continue_training_conversation(
             break
         except Exception as error:
             last_error = error
+            from app.services.voice_poc_metrics import voice_poc_metrics
+            voice_poc_metrics.record(session.id, state.id, "error")
+            if not getattr(error, "retryable", True):
+                result = fallback_result(provider="fallback", model="provider-unavailable")
+                voice_poc_metrics.record(session.id, state.id, "fallback")
+                break
+            if attempt <= MAX_CONVERSATION_PROVIDER_RETRIES:
+                voice_poc_metrics.record(session.id, state.id, "retry")
     else:
-        raise ConversationProviderError(f"Gemini conversation retry limit exhausted: {type(last_error).__name__ if last_error else 'unknown'}")
+        if not isinstance(last_error, ConversationProviderError):
+            raise ConversationProviderError("Conversation response could not be generated.")
+        result = fallback_result(provider="fallback", model="provider-unavailable")
+        result.assistantText = "Yanıtını aldım. Konuşma servisine şu an ulaşılamıyor; bu adımı tamamlayıp devam edebilirsin. Değerlendirme eğitim sonunda yapılacak."
 
     if result.providerMetadata.fallbackUsed:
         result.action = "complete"

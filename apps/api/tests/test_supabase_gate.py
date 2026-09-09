@@ -13,7 +13,7 @@ class SupabaseGateTests(unittest.TestCase):
         self.assertTrue((MIGRATIONS / "0001_initial_schema.sql").exists())
         self.assertTrue((MIGRATIONS / "0002_rls_policies.sql").exists())
         self.assertTrue((MIGRATIONS / "0003_seed_demo_data.sql").exists())
-        self.assertTrue((MIGRATIONS / "0006_restrict_finalize_rpc_grants.sql").exists())
+        self.assertTrue((MIGRATIONS / "0009_restrict_finalize_rpc_grants.sql").exists())
         self.assertTrue((MIGRATIONS / "0007_restrict_session_evaluation_table_grants.sql").exists())
         self.assertTrue((MIGRATIONS.parent / "local_bootstrap_auth_fixtures.sql").exists())
         self.assertTrue((MIGRATIONS.parent / "bootstrap-local-development.ps1").exists())
@@ -97,7 +97,7 @@ class SupabaseGateTests(unittest.TestCase):
         self.assertNotIn("anon_key", rendered)
 
     def test_finalize_rpc_is_not_executable_by_anon(self):
-        migration = (MIGRATIONS / "0006_restrict_finalize_rpc_grants.sql").read_text(encoding="utf-8").lower()
+        migration = (MIGRATIONS / "0009_restrict_finalize_rpc_grants.sql").read_text(encoding="utf-8").lower()
         self.assertIn("revoke all on function public.finalize_session_evaluation", migration)
         self.assertIn("from anon", migration)
         self.assertIn("grant execute on function public.finalize_session_evaluation", migration)

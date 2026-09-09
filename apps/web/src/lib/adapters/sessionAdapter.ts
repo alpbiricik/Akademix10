@@ -1,3 +1,4 @@
+import { ApiError } from "@/lib/api/errors";
 import { apiGet, apiPatch, apiPost } from "@/lib/api/client";
 import type { SessionAnswerPayload, SessionFinalizePayload, SessionStateUpdatePayload } from "@/lib/api/types";
 import type {
@@ -11,6 +12,7 @@ import { getCurrentState } from "@/lib/state-machine/engine";
 import type { TrainingModule, TrainingSession, TrainingState, TrainingTemplate } from "@/lib/state-machine/types";
 
 export interface ConversationTurnResponse {
+  session: TrainingSession;
   stateId: string;
   turnNumber: number;
   assistantText: string;
@@ -40,6 +42,18 @@ export interface VoiceAudioResponse {
     contentType?: string | null;
   };
   avatarSessionActive?: boolean;
+  avatarDeliveryId?: string | null;
+}
+
+export interface VoiceDeliveryResponse {
+  status: "sending" | "completed" | "fallback" | "expired" | "cancelled" | "failed" | "text_only";
+  audioPayloadBase64?: string | null;
+  contentType?: string | null;
+  errorCode?: string | null;
+}
+
+export function getVoiceDelivery(sessionId: string, deliveryId: string) {
+  return apiGet<VoiceDeliveryResponse>(`/api/learner/sessions/${encodeURIComponent(sessionId)}/voice/delivery/${encodeURIComponent(deliveryId)}`);
 }
 
 interface SessionApiResponse {
@@ -101,12 +115,12 @@ export function submitSessionAnswer(sessionId: string, payload: SessionAnswerPay
   return submitSessionAnswerWithScoring(sessionId, payload).then((response) => response?.session ?? null);
 }
 
-export function submitConversationTurn(sessionId: string, payload: { stateId: string; learnerText: string }) {
+export function submitConversationTurn(sessionId: string, payload: { stateId: string; learnerText: string; textOnly?: boolean }) {
   return apiPost<ConversationTurnResponse>(`/api/learner/sessions/${sessionId}/conversation-turn`, payload);
 }
 
-export function startVoiceOpening(sessionId: string, stateId: string): Promise<VoiceAudioResponse> {
-  return apiPost<VoiceAudioResponse>(`/api/learner/sessions/${sessionId}/voice/opening`, { stateId, learnerText: "" });
+export function startVoiceOpening(sessionId: string, stateId: string, textOnly = false, preparedOpeningId?: string): Promise<VoiceAudioResponse> {
+  return apiPost<VoiceAudioResponse>(`/api/learner/sessions/${sessionId}/voice/opening`, { stateId, learnerText: "", textOnly, ...(preparedOpeningId ? { preparedOpeningId } : {}) });
 }
 
 
@@ -120,7 +134,12 @@ export function sendAvatarSessionAction(sessionId: string, payload: LiveAvatarSe
 
 
 export function finalizeSession(sessionId: string, payload: SessionFinalizePayload) {
-  return apiPost<{ session: TrainingSession }>(`/api/learner/sessions/${sessionId}/finalize`, payload).then((response) => response.session);
+  return apiPost<{ status: string; session: TrainingSession }>(`/api/learner/sessions/${sessionId}/finalize`, payload).then((response) => {
+    if (response.status !== "completed" || response.session.status !== "completed") {
+      throw new ApiError("Final evaluation is still processing", 409, { detail: { code: "evaluation_processing" } });
+    }
+    return response.session;
+  });
 }
 
 export function completeCurrentState(sessionId: string) {
@@ -144,4 +163,21 @@ export function getCurrentSessionState(sessionId: string) {
 
 export function restartLearnerSession() {
   return apiPost<TrainingSession>("/api/learner/sessions/restart");
+}
+
+export function cancelVoiceDelivery(sessionId: string, stateId: string) {
+  return apiPost(`/api/learner/sessions/${encodeURIComponent(sessionId)}/voice/cancel`, { stateId });
+}
+
+export function recoverConversationState(sessionId: string, stateId: string) {
+  return apiPost<TrainingSession>(`/api/learner/sessions/${encodeURIComponent(sessionId)}/conversation/recover`, { stateId });
+}
+
+export function recordBrowserVoiceMetric(sessionId: string, stateId: string, event: "browser_first_frame" | "browser_playback" | "browser_end_to_end", latencyMs: number) {
+  if (!Number.isFinite(latencyMs) || latencyMs < 0 || latencyMs > 600000) return Promise.resolve();
+  return apiPost(`/api/learner/sessions/${encodeURIComponent(sessionId)}/voice/metrics`, { stateId, event, metrics: { latency_ms: Math.round(latencyMs) } });
+}
+
+export function prepareVoiceOpening(sessionId: string, stateId: string) {
+  return apiPost<{ preparedOpeningId: string | null; assistantText: string; errorCode?: string | null }>(`/api/learner/sessions/${encodeURIComponent(sessionId)}/voice/opening/prepare`, { stateId });
 }

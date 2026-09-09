@@ -44,11 +44,11 @@ def validate_rubric(rubric: RubricDTO) -> None:
             raise InvalidRubricError(f"Dimension {dimension.id} must map to at least one skill.")
 
 
-def validate_answer(answer_text: str) -> list[GuardrailFlagDTO]:
+def validate_answer(answer_text: str, max_chars: int = MAX_ANSWER_CHARS) -> list[GuardrailFlagDTO]:
     normalized = answer_text.strip()
     if len(normalized) < MIN_ANSWER_CHARS:
         raise AnswerGuardrailError("Answer is empty or too short to score.")
-    if len(normalized) > MAX_ANSWER_CHARS:
+    if len(normalized) > max_chars:
         raise AnswerGuardrailError("Answer exceeds the scoring length limit.")
     flags = []
     if len(normalized.split()) < 3:
@@ -121,9 +121,10 @@ def score_answer(
     rubric: RubricDTO,
     provider: ScoringProvider | None = None,
     enforce_query_limit: bool = True,
+    max_answer_chars: int = MAX_ANSWER_CHARS,
 ) -> StructuredScoringResultDTO:
     validate_rubric(rubric)
-    guardrail_flags = validate_answer(answer_text)
+    guardrail_flags = validate_answer(answer_text, max_chars=max_answer_chars)
     if enforce_query_limit:
         if scoring_repository.get_query_count(session.id, state.id) >= MAX_QUERIES_PER_STATE:
             raise MaxQueriesPerStateError("Max queries per state exceeded.")

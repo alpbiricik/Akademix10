@@ -5,6 +5,7 @@ import { Bot, RefreshCw, Video, VideoOff, Volume2, Wifi } from "lucide-react";
 import { Track } from "livekit-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { recordBrowserVoiceMetric } from "@/lib/adapters/sessionAdapter";
 import { acquireAvatarSession, releaseAvatarSession } from "@/lib/avatar-session-manager";
 
 export interface LiveAvatarViewProps {
@@ -16,6 +17,7 @@ export interface LiveAvatarViewProps {
   assistantText?: string;
   onAvatarError?: (error: string) => void;
   onAvatarReady?: () => void;
+  onPlaybackStarted?: () => void;
 }
 
 export function LiveAvatarView({
@@ -26,6 +28,7 @@ export function LiveAvatarView({
   assistantText,
   onAvatarError,
   onAvatarReady,
+  onPlaybackStarted,
 }: LiveAvatarViewProps) {
   const [status, setStatus] = useState<"idle" | "connecting" | "streaming" | "error">("idle");
   const [isStarted, setIsStarted] = useState(true);
@@ -33,6 +36,10 @@ export function LiveAvatarView({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const initInFlightRef = useRef(false);
+  const connectStartedRef = useRef<number | null>(null);
+  const activeRef = useRef(false);
+  const onPlaybackStartedRef = useRef(onPlaybackStarted);
+  useEffect(() => { onPlaybackStartedRef.current = onPlaybackStarted; }, [onPlaybackStarted]);
   const videoReadyRef = useRef(false);
   
   const onAvatarErrorRef = useRef(onAvatarError);
@@ -49,23 +56,30 @@ export function LiveAvatarView({
   }, [sessionId, stateId]);
 
   const markAvatarVideoReady = useCallback(() => {
-    if (videoReadyRef.current) return;
+    if (!activeRef.current || videoReadyRef.current) return;
     videoReadyRef.current = true;
     setStatus("streaming");
+    if (connectStartedRef.current !== null) void recordBrowserVoiceMetric(sessionId, stateId, "browser_first_frame", performance.now() - connectStartedRef.current).catch(() => undefined);
     onAvatarReadyRef.current?.();
-  }, []);
+  }, [sessionId, stateId]);
 
   const initAvatar = useCallback(async () => {
     if (initInFlightRef.current) return;
     initInFlightRef.current = true;
+    connectStartedRef.current = performance.now();
     setStatus("connecting");
 
     try {
       const attachVideoTrack = (track: Track) => {
+        if (!activeRef.current) return;
         if (track.kind === Track.Kind.Video && videoRef.current) {
           const video = track.attach(videoRef.current) as HTMLVideoElement;
           const markReadyAfterPlay = () => {
-            void video.play().finally(markAvatarVideoReady);
+            void video.play().then(() => {
+              if (!activeRef.current) return;
+              if (typeof video.requestVideoFrameCallback === "function") video.requestVideoFrameCallback(markAvatarVideoReady);
+              else markAvatarVideoReady();
+            }).catch(() => onAvatarErrorRef.current?.("Video oynatilamadi. Yazili devam edebilirsin."));
           };
           if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
             markReadyAfterPlay();
@@ -81,16 +95,20 @@ export function LiveAvatarView({
       };
 
       const handleDisconnected = () => {
+        if (!activeRef.current) return;
+        onAvatarErrorRef.current?.("Avatar baglantisi kapandi. Tekrar dene veya yazarak devam et.");
         videoReadyRef.current = false;
         setStatus("idle");
       };
 
       const session = await acquireAvatarSession(sessionId, stateId, attachVideoTrack, handleDisconnected);
+      if (!activeRef.current) return;
       if (!videoReadyRef.current) {
         setStatus(session.status === "error" ? "error" : "connecting");
       }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "Could not connect to LiveAvatar.";
+    } catch {
+      if (!activeRef.current) return;
+      const msg = "Avatar baglantisi kurulamadi. Yazili devam edebilirsin.";
       setStatus("error");
       onAvatarErrorRef.current?.(msg);
     } finally {
@@ -105,6 +123,15 @@ export function LiveAvatarView({
 
   useEffect(() => {
     let cancelled = false;
+    activeRef.current = isStarted;
+    const video = videoRef.current;
+    const audio = audioRef.current;
+    const startupTimeout = window.setTimeout(() => {
+      if (!cancelled && isStarted && !videoReadyRef.current) {
+        activeRef.current = false;
+        onAvatarErrorRef.current?.("Avatar goruntusu zamaninda baslamadi. Tekrar dene veya yazarak devam et.");
+      }
+    }, 30000);
     queueMicrotask(() => {
       if (cancelled) return;
       if (isStarted) {
@@ -115,6 +142,10 @@ export function LiveAvatarView({
     });
     return () => {
       cancelled = true;
+      window.clearTimeout(startupTimeout);
+      activeRef.current = false;
+      video?.pause();
+      audio?.pause();
       void stopAvatar();
     };
   }, [initAvatar, isStarted, stopAvatar]);
@@ -130,7 +161,7 @@ export function LiveAvatarView({
 
   return (
     <div className="relative overflow-hidden rounded-xl border border-teal-200 bg-linear-to-b from-slate-900 to-slate-950 p-4 text-white shadow-md">
-      <audio ref={audioRef} autoPlay />
+      <audio ref={audioRef} autoPlay onPlaying={() => onPlaybackStartedRef.current?.()} />
       {/* Header & Badges */}
 
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">

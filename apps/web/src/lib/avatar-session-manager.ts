@@ -9,6 +9,7 @@ export interface AvatarSession {
   status: "idle" | "connecting" | "streaming" | "error";
   refCount: number;
   disconnectTimeout: NodeJS.Timeout | null;
+  ready?: Promise<AvatarSession>;
 }
 
 const activeSessions = new Map<string, AvatarSession>();
@@ -45,7 +46,7 @@ export async function acquireAvatarSession(
       }
     }
     
-    return session;
+    return session.ready ?? session;
   }
 
   // Create new
@@ -67,6 +68,12 @@ export async function acquireAvatarSession(
   };
   activeSessions.set(key, newSession);
 
+  const ensureActive = () => {
+    if (activeSessions.get(key) !== newSession || newSession.refCount <= 0) {
+      throw new Error("Avatar connection cancelled.");
+    }
+  };
+  newSession.ready = (async () => {
   try {
     const tokenRes = await getAvatarSessionToken(sessionId, stateId);
     newSession.tokenRes = tokenRes;
@@ -80,15 +87,22 @@ export async function acquireAvatarSession(
     }
 
     newSession.avatarSessionId = avatarSessionId;
+    ensureActive();
     await room.connect(livekitUrl, livekitClientToken);
+    ensureActive();
     
     await sendAvatarSessionAction(sessionId, { stateId, avatarSessionId, action: "start" });
+    ensureActive();
     newSession.status = "streaming";
     return newSession;
   } catch (error) {
-    activeSessions.delete(key);
+    if (activeSessions.get(key) === newSession) activeSessions.delete(key);
+    void room.disconnect();
+    if (newSession.avatarSessionId) void sendAvatarSessionAction(sessionId, { stateId, avatarSessionId: newSession.avatarSessionId, action: "stop" }).catch(() => undefined);
     throw error;
   }
+  })();
+  return newSession.ready;
 }
 
 export function releaseAvatarSession(sessionId: string, stateId: string) {
@@ -96,12 +110,14 @@ export function releaseAvatarSession(sessionId: string, stateId: string) {
   const session = activeSessions.get(key);
   if (!session) return;
 
-  session.refCount--;
+  session.refCount = Math.max(0, session.refCount - 1);
   if (session.refCount <= 0) {
+    if (session.disconnectTimeout) return;
     session.disconnectTimeout = setTimeout(() => {
+      if (activeSessions.get(key) !== session || session.refCount > 0) return;
       activeSessions.delete(key);
       void session.room.disconnect();
-      void sendAvatarSessionAction(sessionId, { stateId, avatarSessionId: session.avatarSessionId, action: "stop" });
+      if (session.avatarSessionId) void sendAvatarSessionAction(sessionId, { stateId, avatarSessionId: session.avatarSessionId, action: "stop" }).catch(() => undefined);
     }, 1500); // 1.5s grace period for StrictMode
   }
 }

@@ -45,7 +45,8 @@ class ElevenLabsSpeechToTextProvider:
             async with websockets.connect(self._url(), additional_headers={"xi-api-key": self._api_key}, close_timeout=2) as websocket:
                 sender = asyncio.create_task(self._send_audio(websocket, audio_chunks))
                 try:
-                    async for message in websocket:
+                    while True:
+                        message = await asyncio.wait_for(websocket.recv(), timeout=30)
                         try:
                             event = json.loads(message)
                         except json.JSONDecodeError:
